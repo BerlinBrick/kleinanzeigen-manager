@@ -1,0 +1,3064 @@
+diff --git a/backend/server.py b/backend/server.py
+new file mode 100644
+index 0000000..b69bbb2
+--- /dev/null
++++ b/backend/server.py
+@@ -0,0 +1,72 @@
++"""
++Reverse-proxy shim for the kleinanzeigen-bot-ui Next.js monolith.
++
++The Emergent ingress routes `/api/*` to port 8001 and everything else to 3000.
++This Next.js app serves BOTH its UI and its `/api/*` routes on a single port
++(3000). This shim runs on 8001 and forwards incoming `/api/*` (and any other)
++requests to the Next.js server on localhost:3000 so the app works end-to-end
++behind the platform ingress.
++"""
++import os
++import httpx
++from fastapi import FastAPI, Request
++from fastapi.responses import Response, StreamingResponse
++
++NEXT_ORIGIN = os.environ.get("NEXT_ORIGIN", "http://127.0.0.1:3000")
++
++app = FastAPI(title="kb-ui-proxy")
++
++# Long timeout: bot/messaging endpoints can be slow; streaming endpoints (logs) stay open.
++_client = httpx.AsyncClient(base_url=NEXT_ORIGIN, timeout=httpx.Timeout(600.0), follow_redirects=False)
++
++_HOP_BY_HOP = {
++    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
++    "te", "trailers", "transfer-encoding", "upgrade", "content-encoding",
++    "content-length",
++}
++
++
++@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
++async def proxy(path: str, request: Request):
++    url = httpx.URL(path="/" + path, query=request.url.query.encode("utf-8"))
++
++    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
++    body = await request.body()
++
++    req = _client.build_request(
++        request.method,
++        url,
++        headers=fwd_headers,
++        content=body if body else None,
++    )
++    upstream = await _client.send(req, stream=True)
++
++    resp_headers = {
++        k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_BY_HOP
++    }
++    content_type = upstream.headers.get("content-type", "")
++
++    # Stream server-sent events / large responses without buffering.
++    if "text/event-stream" in content_type:
++        async def event_stream():
++            try:
++                async for chunk in upstream.aiter_raw():
++                    yield chunk
++            finally:
++                await upstream.aclose()
++
++        return StreamingResponse(
++            event_stream(),
++            status_code=upstream.status_code,
++            headers=resp_headers,
++            media_type=content_type or None,
++        )
++
++    content = await upstream.aread()
++    await upstream.aclose()
++    return Response(
++        content=content,
++        status_code=upstream.status_code,
++        headers=resp_headers,
++        media_type=content_type or None,
++    )
+diff --git a/backend/tests/test_multi_account.py b/backend/tests/test_multi_account.py
+new file mode 100644
+index 0000000..f8e100e
+--- /dev/null
++++ b/backend/tests/test_multi_account.py
+@@ -0,0 +1,193 @@
++"""Multi-account Kleinanzeigen management architecture tests.
++
++Tests validate account CRUD, x-account-id routing, credential/session isolation,
++template independence, and aggregate endpoints — NOT live KA automation.
++"""
++import os
++import pytest
++import requests
++
++BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8001").rstrip("/")
++API = f"{BASE_URL}/api"
++
++APP_EMAIL = "admin@local.test"
++APP_PASS = "adminpass123"
++
++
++@pytest.fixture(scope="session")
++def token():
++    r = requests.post(f"{API}/auth/login", json={"email": APP_EMAIL, "password": APP_PASS}, timeout=15)
++    assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
++    data = r.json()
++    tok = data.get("token") or data.get("access_token") or (data.get("data") or {}).get("token")
++    assert tok, f"no token in response: {data}"
++    return tok
++
++
++@pytest.fixture(scope="session")
++def auth_headers(token):
++    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
++
++
++def _hdr(auth, account_id=None):
++    h = dict(auth)
++    if account_id:
++        h["x-account-id"] = account_id
++    return h
++
++
++# ---------- Auth ----------
++class TestAuth:
++    def test_login_returns_token(self, token):
++        assert isinstance(token, str) and len(token) > 10
++
++
++# ---------- Accounts CRUD ----------
++class TestAccounts:
++    created_ids = []
++
++    def test_list_accounts_has_default(self, auth_headers):
++        r = requests.get(f"{API}/accounts", headers=auth_headers, timeout=15)
++        assert r.status_code == 200, r.text
++        data = r.json()
++        accounts = data.get("accounts") if isinstance(data, dict) else data
++        assert isinstance(accounts, list) and len(accounts) >= 1
++        default = next((a for a in accounts if a.get("id") == "default"), None)
++        assert default is not None, f"no default account: {accounts}"
++        # Verify fields
++        assert "login_status" in default, default
++        assert "ad_count" in default, default
++
++    def test_create_multiple_accounts(self, auth_headers):
++        for name in ["BerlinBrick", "HamburgHaus", "MunichMart"]:
++            r = requests.post(f"{API}/accounts", headers=auth_headers,
++                              json={"display_name": name}, timeout=15)
++            assert r.status_code in (200, 201), f"{name}: {r.status_code} {r.text}"
++            body = r.json()
++            acc = body.get("account") if isinstance(body, dict) else None
++            assert acc and acc.get("id"), f"no id in response: {body}"
++            TestAccounts.created_ids.append(acc["id"])
++        # verify listed
++        r = requests.get(f"{API}/accounts", headers=auth_headers, timeout=15)
++        listed_ids = [a["id"] for a in (r.json().get("accounts") or [])]
++        for cid in TestAccounts.created_ids:
++            assert cid in listed_ids
++
++    def test_credential_isolation(self, auth_headers):
++        assert TestAccounts.created_ids, "need created accounts"
++        acc_id = TestAccounts.created_ids[0]
++        # PUT creds on new account
++        r = requests.put(f"{API}/accounts/{acc_id}/credentials", headers=auth_headers,
++                         json={"username": "brick@x.test", "password": "pw1"}, timeout=15)
++        assert r.status_code in (200, 204), r.text
++
++        # GET config with x-account-id -> should return brick@x.test
++        r = requests.get(f"{API}/system/config", headers=_hdr(auth_headers, acc_id), timeout=15)
++        assert r.status_code == 200, r.text
++        cfg = r.json()
++        # navigate to login.username
++        login = (cfg.get("login") or (cfg.get("config") or {}).get("login") or {})
++        assert login.get("username") == "brick@x.test", f"expected brick@x.test, got {cfg}"
++
++        # GET config for default (no header)
++        r_def = requests.get(f"{API}/system/config", headers=auth_headers, timeout=15)
++        assert r_def.status_code == 200, r_def.text
++        cfg_def = r_def.json()
++        login_def = (cfg_def.get("login") or (cfg_def.get("config") or {}).get("login") or {})
++        default_username = login_def.get("username")
++        assert default_username != "brick@x.test", \
++            f"credential leaked into default account: {default_username}"
++
++    def test_app_login_still_works_after_creds(self, auth_headers):
++        # setting KA credentials must NOT change users.yaml app login
++        r = requests.post(f"{API}/auth/login",
++                          json={"email": APP_EMAIL, "password": APP_PASS}, timeout=15)
++        assert r.status_code == 200, r.text
++        assert (r.json().get("token") or r.json().get("access_token"))
++
++    def test_rename_account(self, auth_headers):
++        acc_id = TestAccounts.created_ids[1]
++        r = requests.put(f"{API}/accounts/{acc_id}", headers=auth_headers,
++                         json={"display_name": "Renamed"}, timeout=15)
++        assert r.status_code in (200, 204), r.text
++        r = requests.get(f"{API}/accounts", headers=auth_headers, timeout=15)
++        acc = next((a for a in r.json().get("accounts", []) if a["id"] == acc_id), None)
++        assert acc and acc.get("display_name") == "Renamed", acc
++
++    def test_disconnect(self, auth_headers):
++        acc_id = TestAccounts.created_ids[0]
++        r = requests.post(f"{API}/accounts/{acc_id}/disconnect",
++                          headers=auth_headers, timeout=15)
++        assert r.status_code == 200, r.text
++        body = r.json()
++        assert body.get("ok") is True or "login_status" in body, body
++
++    def test_default_account_cannot_be_deleted(self, auth_headers):
++        r = requests.delete(f"{API}/accounts/default", headers=auth_headers, timeout=15)
++        assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
++
++    def test_delete_non_default(self, auth_headers):
++        acc_id = TestAccounts.created_ids[-1]
++        r = requests.delete(f"{API}/accounts/{acc_id}", headers=auth_headers, timeout=15)
++        assert r.status_code in (200, 204), r.text
++        r = requests.get(f"{API}/accounts", headers=auth_headers, timeout=15)
++        ids = [a["id"] for a in r.json().get("accounts", [])]
++        assert acc_id not in ids
++
++
++# ---------- Templates independence ----------
++class TestTemplates:
++    def test_templates_same_across_accounts(self, auth_headers):
++        assert TestAccounts.created_ids, "need accounts"
++        acc_a = TestAccounts.created_ids[0]
++        # Use whichever second id still exists
++        acc_b = "default"
++
++        r_a = requests.get(f"{API}/templates", headers=_hdr(auth_headers, acc_a), timeout=15)
++        r_b = requests.get(f"{API}/templates", headers=_hdr(auth_headers, acc_b), timeout=15)
++        assert r_a.status_code == 200 and r_b.status_code == 200, (r_a.text, r_b.text)
++        a_list = r_a.json().get("templates", r_a.json()) if isinstance(r_a.json(), dict) else r_a.json()
++        b_list = r_b.json().get("templates", r_b.json()) if isinstance(r_b.json(), dict) else r_b.json()
++        # normalize
++        def _slugs(x):
++            if isinstance(x, list):
++                return sorted([(t.get("slug") or t.get("id") or t.get("name")) for t in x if isinstance(t, dict)])
++            return []
++        assert _slugs(a_list) == _slugs(b_list), f"templates differ: {a_list} vs {b_list}"
++
++
++# ---------- Aggregates ----------
++class TestAggregates:
++    def test_accounts_overview(self, auth_headers):
++        r = requests.get(f"{API}/accounts/overview", headers=auth_headers, timeout=20)
++        assert r.status_code == 200, r.text
++        data = r.json()
++        totals = data.get("totals") or {}
++        for key in ["accounts", "connected", "active_ads", "unread", "automations"]:
++            assert key in totals, f"missing totals.{key}: {data}"
++        assert isinstance(data.get("accounts"), list)
++        assert isinstance(data.get("recent_ads"), list)
++
++    def test_inbox_aggregation(self, auth_headers):
++        r = requests.get(f"{API}/inbox", headers=auth_headers, timeout=20)
++        assert r.status_code == 200, r.text
++        data = r.json()
++        assert "conversations" in data
++        assert isinstance(data["conversations"], list)
++        assert "numUnreadMessages" in data or "num_unread_messages" in data
++        assert "errors" in data and isinstance(data["errors"], list)
++
++
++# ---------- Regression ----------
++class TestRegression:
++    def test_health(self):
++        r = requests.get(f"{API}/system/health", timeout=10)
++        assert r.status_code == 200
++
++    def test_ads(self, auth_headers):
++        r = requests.get(f"{API}/ads", headers=auth_headers, timeout=15)
++        assert r.status_code == 200, r.text
++
++    def test_system_config(self, auth_headers):
++        r = requests.get(f"{API}/system/config", headers=auth_headers, timeout=15)
++        assert r.status_code == 200, r.text
+diff --git a/frontend/package.json b/frontend/package.json
+new file mode 100644
+index 0000000..eafa6ba
+--- /dev/null
++++ b/frontend/package.json
+@@ -0,0 +1,8 @@
++{
++  "name": "kb-frontend-shim",
++  "private": true,
++  "description": "Supervisor shim: launches the Next.js app located in /app on port 3000",
++  "scripts": {
++    "start": "cd /app && BOT_DIR=/app NODE_ENV=development /app/node_modules/.bin/next dev -p 3000 -H 0.0.0.0"
++  }
++}
+diff --git a/memory/PRD.md b/memory/PRD.md
+new file mode 100644
+index 0000000..f2ea2b9
+--- /dev/null
++++ b/memory/PRD.md
+@@ -0,0 +1,53 @@
++# Multi-Account Kleinanzeigen Manager — PRD
++
++## Origin
++Existing GitHub project: `kleinanzeigen-bot-ui` (Next.js monolith, YAML file storage,
++drives the Python `kleinanzeigen-bot` CLI). Extended in-place into a private
++MULTI-ACCOUNT dashboard: ONE app user manages MANY Kleinanzeigen accounts.
++
++## Core requirements (static)
++- One app user → many isolated Kleinanzeigen accounts (own login/session, browser
++  profile, ads, conversations). Number of accounts NOT hardcoded.
++- Correct account/session routing: every KA operation targets exactly one account.
++- Central inbox across all accounts; replies must use the originating account.
++- Templates independent of accounts; publish through any selected account.
++- Active ads across accounts; automatic republishing via existing scheduler.
++- Mobile-first responsive; keep existing app auth; preserve the underlying bot.
++
++## Architecture (implemented)
++- **Account = isolated workspace** (reuses existing per-user workspace isolation).
++  Default account maps to the app user's root workspace (backward compat, no file
++  moves). Extra accounts live at `<userWorkspace>/accounts/<accountId>/` with own
++  `config.yaml` (KA login), `.temp/browser-profile`, `ads/`, `downloaded-ads/`.
++- **Registry**: `<userWorkspace>/accounts.yaml` (id, display_name, is_default,
++  created/updated, last_sync, login_status, republish_default_days).
++- **Account routing via `x-account-id` header** → `getCurrentUser` resolves the
++  account sub-workspace and sets `user.workspace` (account-scoped) + `user.userWorkspace`
++  (shared root). ALL existing routes become account-scoped with no per-route rewrite.
++- **Templates** resolve to `user.userWorkspace` (shared across accounts).
++- Run setup: Next.js on :3000 (frontend shim `/app/frontend/package.json`) + FastAPI
++  reverse-proxy on :8001 (`/app/backend/server.py`) because Emergent routes /api→8001.
++
++## What's implemented (2026-06)
++- lib: `src/lib/accounts/accounts.ts` (model/registry/isolation/migration/CRUD).
++- middleware: account-aware `getCurrentUser`.
++- APIs: `/api/accounts` (GET/POST), `/api/accounts/[id]` (PATCH/PUT/DELETE),
++  `/api/accounts/[id]/credentials` (GET/PUT), `/api/accounts/[id]/disconnect` (POST),
++  `/api/accounts/overview` (aggregate dashboard), `/api/inbox` (unified messages).
++- Templates decoupled to user workspace (templates + [slug] + from-template + ads POST).
++- Frontend: AccountContext + switcher (header), Accounts page, multi-account Dashboard
++  overview, central Inbox with per-account filters + correct-account reply routing.
++- Nav: added Postfach (inbox) + Konten (accounts) links.
++- Backend tested: 15/15 pass (account CRUD, isolation, x-account-id routing, template
++  independence, aggregate endpoints, regression).
++
++## Requires real testing (needs Python bot binary + real KA accounts)
++- Live login/MFA, ad publish/update/delete/extend/republish, live message fetch/reply,
++  scheduler-driven auto-republish. These are wired to the existing bot integration but
++  the bot binary is not installed in this preview.
++
++## Backlog / next
++- P1: Explicit account picker in the publish flow (currently uses active account via switcher).
++- P1: Persist `last_sync` on successful sync; surface unread counts once sessions exist.
++- P2: Per-account automation settings UI (republish interval per ad) surfaced in Automations page.
++- P2: Install/verify `kleinanzeigen-bot` binary for live automation.
+diff --git a/src/app/(app)/accounts/page.module.scss b/src/app/(app)/accounts/page.module.scss
+new file mode 100644
+index 0000000..3e1a14f
+--- /dev/null
++++ b/src/app/(app)/accounts/page.module.scss
+@@ -0,0 +1,109 @@
++.page {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-6);
++  max-width: 1100px;
++  margin: 0 auto;
++  padding: var(--space-6) var(--space-4);
++  width: 100%;
++}
++
++.headerRow {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: var(--space-4);
++  flex-wrap: wrap;
++}
++
++.pageTitle {
++  font-size: var(--font-size-xl);
++  font-weight: var(--font-bold);
++  color: var(--text-primary);
++}
++
++.subtitle {
++  margin-top: var(--space-1);
++  font-size: var(--font-size-sm);
++  color: var(--text-muted);
++}
++
++.grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
++  gap: var(--space-4);
++
++  @media (max-width: 560px) {
++    grid-template-columns: 1fr;
++  }
++}
++
++.card {
++  display: flex;
++  flex-direction: column;
++}
++
++.cardTop {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: var(--space-2);
++}
++
++.cardTitleGroup {
++  display: flex;
++  align-items: center;
++  gap: var(--space-2);
++  flex-wrap: wrap;
++}
++
++.cardName {
++  font-size: var(--font-size-lg);
++  font-weight: var(--font-bold);
++  color: var(--text-primary);
++  word-break: break-word;
++}
++
++.stats {
++  display: flex;
++  gap: var(--space-6);
++  margin: var(--space-4) 0;
++}
++
++.stat {
++  display: flex;
++  flex-direction: column;
++}
++
++.statValue {
++  font-size: var(--font-size-2xl, 1.6rem);
++  font-weight: var(--font-bold);
++  color: var(--text-primary);
++  line-height: 1.1;
++}
++
++.statLabel {
++  font-size: var(--font-size-xs);
++  color: var(--text-muted);
++  text-transform: uppercase;
++  letter-spacing: 0.05em;
++}
++
++.syncInfo {
++  font-size: var(--font-size-xs);
++  color: var(--text-muted);
++  margin-bottom: var(--space-4);
++}
++
++.actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: var(--space-2);
++  margin-top: auto;
++}
++
++.modalHint {
++  margin-top: var(--space-3);
++  font-size: var(--font-size-xs);
++  color: var(--text-muted);
++}
+diff --git a/src/app/(app)/accounts/page.tsx b/src/app/(app)/accounts/page.tsx
+new file mode 100644
+index 0000000..b0a245f
+--- /dev/null
++++ b/src/app/(app)/accounts/page.tsx
+@@ -0,0 +1,319 @@
++'use client';
++
++import { useState } from 'react';
++import { useRouter } from 'next/navigation';
++import { Card, Button, Badge, Modal, Input, EmptyState, PageLoader, useToast, showConfirm } from '@/components/ui';
++import { useAccount } from '@/contexts/AccountContext';
++import {
++  useAccountsList,
++  useCreateAccount,
++  useRenameAccount,
++  useDisconnectAccount,
++  useDeleteAccount,
++  useAccountCredentials,
++  useSetCredentials,
++} from '@/hooks/useAccounts';
++import { api } from '@/lib/api/client';
++import type { AccountSummary } from '@/contexts/AccountContext';
++import styles from './page.module.scss';
++
++const STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'muted' }> = {
++  connected: { label: 'Verbunden', variant: 'success' },
++  disconnected: { label: 'Getrennt', variant: 'warning' },
++  no_credentials: { label: 'Keine Zugangsdaten', variant: 'muted' },
++};
++
++function formatSync(iso: string | null): string {
++  if (!iso) return 'Nie synchronisiert';
++  const d = new Date(iso);
++  if (Number.isNaN(d.getTime())) return 'Nie synchronisiert';
++  return `Zuletzt: ${d.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}`;
++}
++
++export default function AccountsPage() {
++  const { data, isLoading } = useAccountsList();
++  const { activeAccountId, setActiveAccount } = useAccount();
++  const router = useRouter();
++  const { toast } = useToast();
++
++  const createAccount = useCreateAccount();
++  const renameAccount = useRenameAccount();
++  const disconnect = useDisconnectAccount();
++  const deleteAccount = useDeleteAccount();
++
++  const [addOpen, setAddOpen] = useState(false);
++  const [newName, setNewName] = useState('');
++  const [editAccount, setEditAccount] = useState<AccountSummary | null>(null);
++
++  const accounts = data?.accounts ?? [];
++
++  const handleCreate = async () => {
++    if (!newName.trim()) return;
++    try {
++      await createAccount.mutateAsync(newName.trim());
++      toast('success', `Konto „${newName.trim()}" hinzugefügt`);
++      setNewName('');
++      setAddOpen(false);
++    } catch {
++      toast('error', 'Konto konnte nicht angelegt werden');
++    }
++  };
++
++  const handleConnect = (a: AccountSummary) => {
++    setActiveAccount(a.id);
++    toast('info', `Konto „${a.display_name}" aktiv — Anmeldung wird geöffnet`);
++    router.push('/messages');
++  };
++
++  const handleSync = async (a: AccountSummary) => {
++    setActiveAccount(a.id);
++    try {
++      await api.post('/api/bot/verify', { verbose: true });
++      toast('success', `Synchronisierung für „${a.display_name}" gestartet`);
++    } catch {
++      toast('error', 'Synchronisierung konnte nicht gestartet werden (Bot erforderlich)');
++    }
++  };
++
++  const handleDisconnect = async (a: AccountSummary) => {
++    const ok = await showConfirm(
++      'Konto trennen',
++      `Die Kleinanzeigen-Sitzung für „${a.display_name}" wird beendet. Zugangsdaten bleiben erhalten.`,
++      'Trennen',
++      'Abbrechen',
++    );
++    if (!ok) return;
++    try {
++      await disconnect.mutateAsync(a.id);
++      toast('success', 'Konto getrennt');
++    } catch {
++      toast('error', 'Trennen fehlgeschlagen');
++    }
++  };
++
++  const handleRemove = async (a: AccountSummary) => {
++    const ok = await showConfirm(
++      'Konto entfernen',
++      `„${a.display_name}" wird mit allen lokalen Daten entfernt.`,
++      'Entfernen',
++      'Abbrechen',
++      undefined,
++      'dangerSolid',
++    );
++    if (!ok) return;
++    try {
++      await deleteAccount.mutateAsync(a.id);
++      toast('success', 'Konto entfernt');
++    } catch {
++      toast('error', 'Entfernen fehlgeschlagen');
++    }
++  };
++
++  if (isLoading) return <PageLoader />;
++
++  return (
++    <div className={`${styles.page} animStagger`} data-testid="accounts-page">
++      <div className={styles.headerRow}>
++        <div>
++          <h2 className={styles.pageTitle}>Kleinanzeigen-Konten</h2>
++          <p className={styles.subtitle}>
++            Verwalte mehrere Kleinanzeigen-Konten mit jeweils eigener Sitzung.
++          </p>
++        </div>
++        <Button variant="primary" onClick={() => setAddOpen(true)} data-testid="add-account-button">
++          + Konto hinzufügen
++        </Button>
++      </div>
++
++      {accounts.length === 0 ? (
++        <EmptyState
++          title="Noch keine Konten"
++          message="Füge dein erstes Kleinanzeigen-Konto hinzu."
++          action={<Button variant="primary" onClick={() => setAddOpen(true)}>Konto hinzufügen</Button>}
++        />
++      ) : (
++        <div className={styles.grid} data-testid="accounts-grid">
++          {accounts.map((a) => {
++            const status = STATUS[a.login_status] ?? STATUS.disconnected;
++            const isActive = a.id === activeAccountId;
++            return (
++              <Card key={a.id} hoverable className={styles.card} data-testid={`account-card-${a.id}`}>
++                <Card.Body>
++                  <div className={styles.cardTop}>
++                    <div className={styles.cardTitleGroup}>
++                      <h3 className={styles.cardName}>{a.display_name}</h3>
++                      {a.is_default && <Badge variant="info">Standard</Badge>}
++                      {isActive && <Badge variant="primary">Aktiv</Badge>}
++                    </div>
++                    <Badge variant={status.variant}>{status.label}</Badge>
++                  </div>
++
++                  <div className={styles.stats}>
++                    <div className={styles.stat}>
++                      <span className={styles.statValue}>{a.ad_count}</span>
++                      <span className={styles.statLabel}>Anzeigen</span>
++                    </div>
++                    <div className={styles.stat}>
++                      <span className={styles.statValue}>{a.unread ?? '–'}</span>
++                      <span className={styles.statLabel}>Ungelesen</span>
++                    </div>
++                  </div>
++
++                  <p className={styles.syncInfo}>{formatSync(a.last_sync)}</p>
++
++                  <div className={styles.actions}>
++                    {!isActive && (
++                      <Button size="sm" variant="secondary" onClick={() => setActiveAccount(a.id)} data-testid={`select-account-${a.id}`}>
++                        Auswählen
++                      </Button>
++                    )}
++                    <Button size="sm" variant="primary" onClick={() => handleConnect(a)} data-testid={`connect-account-${a.id}`}>
++                      Anmelden
++                    </Button>
++                    <Button size="sm" variant="secondary" onClick={() => handleSync(a)} data-testid={`sync-account-${a.id}`}>
++                      Synchronisieren
++                    </Button>
++                    <Button size="sm" variant="ghost" onClick={() => setEditAccount(a)} data-testid={`edit-account-${a.id}`}>
++                      Bearbeiten
++                    </Button>
++                    {a.login_status === 'connected' && (
++                      <Button size="sm" variant="ghost" onClick={() => handleDisconnect(a)} data-testid={`disconnect-account-${a.id}`}>
++                        Trennen
++                      </Button>
++                    )}
++                    {!a.is_default && (
++                      <Button size="sm" variant="danger" onClick={() => handleRemove(a)} data-testid={`remove-account-${a.id}`}>
++                        Entfernen
++                      </Button>
++                    )}
++                  </div>
++                </Card.Body>
++              </Card>
++            );
++          })}
++        </div>
++      )}
++
++      <Modal
++        open={addOpen}
++        onClose={() => setAddOpen(false)}
++        title="Konto hinzufügen"
++        footer={
++          <>
++            <Button variant="ghost" onClick={() => setAddOpen(false)}>Abbrechen</Button>
++            <Button variant="primary" loading={createAccount.isPending} onClick={handleCreate} data-testid="create-account-submit">
++              Anlegen
++            </Button>
++          </>
++        }
++      >
++        <Input
++          label="Anzeigename"
++          placeholder="z. B. BerlinBrick, Privat, Sales"
++          value={newName}
++          onChange={(e) => setNewName(e.target.value)}
++          onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
++          data-testid="new-account-name-input"
++          autoFocus
++        />
++        <p className={styles.modalHint}>
++          Zugangsdaten kannst du direkt nach dem Anlegen unter „Bearbeiten" hinterlegen.
++        </p>
++      </Modal>
++
++      {editAccount && (
++        <EditAccountModal
++          account={editAccount}
++          onClose={() => setEditAccount(null)}
++          onRename={async (name) => {
++            await renameAccount.mutateAsync({ id: editAccount.id, display_name: name });
++          }}
++        />
++      )}
++    </div>
++  );
++}
++
++function EditAccountModal({
++  account,
++  onClose,
++  onRename,
++}: {
++  account: AccountSummary;
++  onClose: () => void;
++  onRename: (name: string) => Promise<void>;
++}) {
++  const { toast } = useToast();
++  const { data: creds } = useAccountCredentials(account.id);
++  const setCreds = useSetCredentials();
++  const [name, setName] = useState(account.display_name);
++  const [username, setUsername] = useState('');
++  const [password, setPassword] = useState('');
++  const [saving, setSaving] = useState(false);
++
++  // Prefill username once credentials load
++  if (creds && username === '' && creds.username) {
++    setUsername(creds.username);
++  }
++
++  const handleSave = async () => {
++    setSaving(true);
++    try {
++      if (name.trim() && name.trim() !== account.display_name) {
++        await onRename(name.trim());
++      }
++      if (username.trim()) {
++        await setCreds.mutateAsync({ id: account.id, username: username.trim(), password });
++      }
++      toast('success', 'Konto aktualisiert');
++      onClose();
++    } catch {
++      toast('error', 'Speichern fehlgeschlagen');
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  return (
++    <Modal
++      open
++      onClose={onClose}
++      title={`„${account.display_name}" bearbeiten`}
++      footer={
++        <>
++          <Button variant="ghost" onClick={onClose}>Abbrechen</Button>
++          <Button variant="primary" loading={saving} onClick={handleSave} data-testid="save-account-edit">
++            Speichern
++          </Button>
++        </>
++      }
++    >
++      <Input
++        label="Anzeigename"
++        value={name}
++        onChange={(e) => setName(e.target.value)}
++        data-testid="edit-account-name-input"
++      />
++      <div style={{ marginTop: 'var(--space-4)' }}>
++        <Input
++          label="Kleinanzeigen-Benutzername (E-Mail)"
++          placeholder="konto@example.com"
++          value={username}
++          onChange={(e) => setUsername(e.target.value)}
++          data-testid="edit-account-username-input"
++        />
++      </div>
++      <div style={{ marginTop: 'var(--space-4)' }}>
++        <Input
++          label="Kleinanzeigen-Passwort"
++          type="password"
++          placeholder={creds?.password ? '•••••••• (unverändert)' : 'Passwort'}
++          value={password}
++          onChange={(e) => setPassword(e.target.value)}
++          hint="Leer lassen, um das gespeicherte Passwort beizubehalten."
++          data-testid="edit-account-password-input"
++        />
++      </div>
++    </Modal>
++  );
++}
+diff --git a/src/app/(app)/dashboard/page.tsx b/src/app/(app)/dashboard/page.tsx
+index 95dd786..d4ecccb 100644
+--- a/src/app/(app)/dashboard/page.tsx
++++ b/src/app/(app)/dashboard/page.tsx
+@@ -10,7 +10,9 @@ import { PriceChart } from '@/components/dashboard/PriceChart';
+ import { CategoryBars } from '@/components/dashboard/CategoryBars';
+ import { DistributionCharts } from '@/components/dashboard/DistributionCharts';
+ import { StatsSection } from '@/components/dashboard/StatsSection';
++import { MultiAccountOverview } from '@/components/dashboard/MultiAccountOverview';
+ import { PageLoader } from '@/components/ui';
++import { useAccount } from '@/contexts/AccountContext';
+ import { api } from '@/lib/api/client';
+ import type { AdStatsEntry } from '@/types/stats';
+ import styles from './page.module.scss';
+@@ -21,6 +23,7 @@ interface StatsResponse {
+ }
+ 
+ export default function DashboardPage() {
++  const { activeAccount } = useAccount();
+   const { data: adsData, isLoading: adsLoading } = useAds();
+   const ads = useMemo(() => adsData?.ads ?? [], [adsData]);
+ 
+@@ -46,6 +49,10 @@ export default function DashboardPage() {
+ 
+   return (
+     <div className={`${styles.dashboard} animStagger`}>
++      <MultiAccountOverview />
++      <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-bold)', color: 'var(--text-primary)' }} data-testid="dashboard-active-account-heading">
++        Details: {activeAccount?.display_name ?? 'Aktives Konto'}
++      </h2>
+       <StatsGrid ads={ads} />
+       <HealthIndicators ads={ads} />
+       <ScheduleCalendar ads={ads} />
+diff --git a/src/app/(app)/inbox/page.module.scss b/src/app/(app)/inbox/page.module.scss
+new file mode 100644
+index 0000000..c179399
+--- /dev/null
++++ b/src/app/(app)/inbox/page.module.scss
+@@ -0,0 +1,251 @@
++.page {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-4);
++  max-width: 1200px;
++  margin: 0 auto;
++  padding: var(--space-4);
++  width: 100%;
++  height: calc(100dvh - var(--header-height));
++}
++
++.toolbar {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: var(--space-3);
++  flex-wrap: wrap;
++}
++
++.title {
++  font-size: var(--font-size-xl);
++  font-weight: var(--font-bold);
++  color: var(--text-primary);
++}
++
++.filters {
++  display: flex;
++  gap: var(--space-2);
++  align-items: center;
++}
++
++.select {
++  min-height: 40px;
++  padding: 0 var(--space-3);
++  border-radius: var(--radius-md);
++  border: 1px solid var(--border-color);
++  background: var(--bg-tertiary);
++  color: var(--text-primary);
++  font-size: var(--font-size-sm);
++}
++
++.chip {
++  min-height: 40px;
++  padding: 0 var(--space-3);
++  border-radius: var(--radius-full, 999px);
++  border: 1px solid var(--border-color);
++  background: transparent;
++  color: var(--text-secondary);
++  font-size: var(--font-size-sm);
++  font-weight: var(--font-semibold);
++  cursor: pointer;
++}
++
++.chipActive {
++  background: var(--accent);
++  border-color: var(--accent);
++  color: var(--accent-text);
++}
++
++.errorBanner {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-1);
++  padding: var(--space-2) var(--space-3);
++  border-radius: var(--radius-md);
++  background: var(--yellow-muted, rgba(234, 179, 8, 0.12));
++  color: var(--text-secondary);
++  font-size: var(--font-size-xs);
++}
++
++.layout {
++  display: grid;
++  grid-template-columns: minmax(300px, 380px) 1fr;
++  gap: var(--space-4);
++  flex: 1;
++  min-height: 0;
++
++  @media (max-width: 768px) {
++    grid-template-columns: 1fr;
++  }
++}
++
++.list {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-2);
++  overflow-y: auto;
++  min-height: 0;
++  padding-right: var(--space-1);
++}
++
++/* On mobile, hide the list when a conversation is open */
++@media (max-width: 768px) {
++  .layoutDetailOpen .list { display: none; }
++}
++
++.center {
++  display: flex;
++  justify-content: center;
++  padding: var(--space-8);
++}
++
++.convRow {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-1);
++  padding: var(--space-3);
++  border: 1px solid var(--border-color);
++  border-radius: var(--radius-md);
++  background: var(--bg-secondary, transparent);
++  cursor: pointer;
++  text-align: left;
++  transition: background-color var(--transition-fast), border-color var(--transition-fast);
++
++  &:hover { background: var(--bg-hover); }
++}
++
++.convRowActive { border-color: var(--accent); background: var(--bg-hover); }
++.convUnread { border-left: 3px solid var(--accent); }
++
++.convTop {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: var(--space-2);
++}
++
++.convName { font-weight: var(--font-bold); color: var(--text-primary); }
++.convTime { font-size: var(--font-size-xs); color: var(--text-muted); flex-shrink: 0; }
++
++.convAd {
++  font-size: var(--font-size-xs);
++  color: var(--text-secondary);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.convPreview {
++  font-size: var(--font-size-sm);
++  color: var(--text-muted);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.convFooter {
++  display: flex;
++  gap: var(--space-2);
++  margin-top: var(--space-1);
++}
++
++.detail {
++  display: flex;
++  flex-direction: column;
++  min-height: 0;
++  border: 1px solid var(--border-color);
++  border-radius: var(--radius-lg);
++  background: var(--bg-secondary, var(--bg-elevated));
++  overflow: hidden;
++}
++
++.detailHeader {
++  display: flex;
++  align-items: center;
++  gap: var(--space-3);
++  padding: var(--space-3) var(--space-4);
++  border-bottom: 1px solid var(--border-color);
++}
++
++.backBtn {
++  border: none;
++  background: transparent;
++  color: var(--text-primary);
++  font-size: 1.4rem;
++  cursor: pointer;
++  line-height: 1;
++}
++
++.detailName { font-weight: var(--font-bold); color: var(--text-primary); }
++.detailAd { font-size: var(--font-size-xs); color: var(--text-muted); }
++
++.receivedVia {
++  padding: var(--space-2) var(--space-4);
++  font-size: var(--font-size-xs);
++  color: var(--text-secondary);
++  background: var(--bg-tertiary);
++  border-bottom: 1px solid var(--border-color);
++
++  strong { color: var(--accent); }
++}
++
++.messages {
++  flex: 1;
++  overflow-y: auto;
++  min-height: 0;
++  padding: var(--space-4);
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-2);
++}
++
++.bubble {
++  max-width: 78%;
++  padding: var(--space-2) var(--space-3);
++  border-radius: var(--radius-lg);
++  font-size: var(--font-size-sm);
++  line-height: 1.4;
++  word-break: break-word;
++}
++
++.bubbleIn {
++  align-self: flex-start;
++  background: var(--bg-tertiary);
++  color: var(--text-primary);
++}
++
++.bubbleOut {
++  align-self: flex-end;
++  background: var(--accent);
++  color: var(--accent-text);
++}
++
++.noMessages {
++  color: var(--text-muted);
++  font-size: var(--font-size-sm);
++  text-align: center;
++  margin-top: var(--space-6);
++}
++
++.replyBar {
++  display: flex;
++  gap: var(--space-2);
++  padding: var(--space-3);
++  border-top: 1px solid var(--border-color);
++  align-items: flex-end;
++}
++
++.replyInput {
++  flex: 1;
++  min-height: 44px;
++  max-height: 120px;
++  resize: vertical;
++  padding: var(--space-2) var(--space-3);
++  border-radius: var(--radius-md);
++  border: 1px solid var(--border-color);
++  background: var(--bg-tertiary);
++  color: var(--text-primary);
++  font-family: inherit;
++  font-size: var(--font-size-sm);
++}
+diff --git a/src/app/(app)/inbox/page.tsx b/src/app/(app)/inbox/page.tsx
+new file mode 100644
+index 0000000..c5967df
+--- /dev/null
++++ b/src/app/(app)/inbox/page.tsx
+@@ -0,0 +1,213 @@
++'use client';
++
++import { useEffect, useMemo, useState } from 'react';
++import { useQuery } from '@tanstack/react-query';
++import { api } from '@/lib/api/client';
++import { Badge, Button, Spinner, EmptyState, useToast } from '@/components/ui';
++import { useAccount } from '@/contexts/AccountContext';
++import { useConversation, useSendMessage } from '@/hooks/useMessages';
++import type { Conversation } from '@/types/message';
++import styles from './page.module.scss';
++
++interface InboxConversation extends Conversation {
++  account_id: string;
++  account_name: string;
++}
++
++interface InboxResponse {
++  conversations: InboxConversation[];
++  numUnreadMessages: number;
++  total: number;
++  errors: Array<{ account_id: string; account_name: string; error: string }>;
++}
++
++function counterpart(c: Conversation): string {
++  return c.role === 'Seller' ? c.buyerName : c.sellerName;
++}
++
++function formatTime(iso: string): string {
++  const d = new Date(iso);
++  if (Number.isNaN(d.getTime())) return '';
++  return d.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
++}
++
++export default function InboxPage() {
++  const { accounts } = useAccount();
++  const [filterAccount, setFilterAccount] = useState<string>('all');
++  const [unreadOnly, setUnreadOnly] = useState(false);
++  const [selected, setSelected] = useState<InboxConversation | null>(null);
++
++  const { data, isLoading } = useQuery<InboxResponse>({
++    queryKey: ['inbox'],
++    queryFn: () => api.get('/api/inbox'),
++    refetchInterval: 30_000,
++  });
++
++  const conversations = useMemo(() => {
++    let list = data?.conversations ?? [];
++    if (filterAccount !== 'all') list = list.filter((c) => c.account_id === filterAccount);
++    if (unreadOnly) list = list.filter((c) => c.unread);
++    return list;
++  }, [data, filterAccount, unreadOnly]);
++
++  return (
++    <div className={styles.page} data-testid="inbox-page">
++      <div className={styles.toolbar}>
++        <h2 className={styles.title}>Zentrales Postfach</h2>
++        <div className={styles.filters}>
++          <select
++            className={styles.select}
++            value={filterAccount}
++            onChange={(e) => setFilterAccount(e.target.value)}
++            data-testid="inbox-account-filter"
++          >
++            <option value="all">Alle Konten</option>
++            {accounts.map((a) => (
++              <option key={a.id} value={a.id}>{a.display_name}</option>
++            ))}
++          </select>
++          <button
++            className={`${styles.chip} ${unreadOnly ? styles.chipActive : ''}`}
++            onClick={() => setUnreadOnly((v) => !v)}
++            data-testid="inbox-unread-filter"
++          >
++            Nur ungelesen
++          </button>
++        </div>
++      </div>
++
++      {data?.errors && data.errors.length > 0 && (
++        <div className={styles.errorBanner} data-testid="inbox-errors">
++          {data.errors.map((e) => (
++            <span key={e.account_id}>„{e.account_name}": {e.error}</span>
++          ))}
++        </div>
++      )}
++
++      <div className={`${styles.layout} ${selected ? styles.layoutDetailOpen : ''}`}>
++        <div className={styles.list} data-testid="inbox-list">
++          {isLoading ? (
++            <div className={styles.center}><Spinner size="lg" /></div>
++          ) : conversations.length === 0 ? (
++            <EmptyState
++              title="Keine Konversationen"
++              message="Verbundene Konten zeigen hier alle Nachrichten. Melde ein Konto an, um Nachrichten zu laden."
++            />
++          ) : (
++            conversations.map((c) => (
++              <button
++                key={`${c.account_id}-${c.id}`}
++                className={`${styles.convRow} ${selected?.id === c.id ? styles.convRowActive : ''} ${c.unread ? styles.convUnread : ''}`}
++                onClick={() => setSelected(c)}
++                data-testid={`inbox-conversation-${c.id}`}
++              >
++                <div className={styles.convTop}>
++                  <span className={styles.convName}>{counterpart(c)}</span>
++                  <span className={styles.convTime}>{formatTime(c.receivedDate)}</span>
++                </div>
++                <div className={styles.convAd}>{c.adTitle ?? 'Anzeige'}</div>
++                <div className={styles.convPreview}>{c.textShortTrimmed}</div>
++                <div className={styles.convFooter}>
++                  <Badge variant="info">{c.account_name}</Badge>
++                  {c.unread && <Badge variant="danger">{c.unreadMessagesCount || 'neu'}</Badge>}
++                </div>
++              </button>
++            ))
++          )}
++        </div>
++
++        {selected && (
++          <ConversationDetail conversation={selected} onClose={() => setSelected(null)} />
++        )}
++      </div>
++    </div>
++  );
++}
++
++function ConversationDetail({
++  conversation,
++  onClose,
++}: {
++  conversation: InboxConversation;
++  onClose: () => void;
++}) {
++  const { setActiveAccount } = useAccount();
++  const { toast } = useToast();
++  const [reply, setReply] = useState('');
++  const [ready, setReady] = useState(false);
++
++  // CRITICAL: route this conversation to its ORIGINATING account so any reply
++  // is sent through that account's session — never another account's. The api
++  // client reads the active account from localStorage, so switch BEFORE the
++  // conversation query is enabled.
++  useEffect(() => {
++    setActiveAccount(conversation.account_id);
++    setReady(true);
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [conversation.account_id]);
++
++  const { data: detail, isLoading } = useConversation(ready ? conversation.id : null);
++  const sendMessage = useSendMessage();
++
++  const handleSend = async () => {
++    if (!reply.trim()) return;
++    try {
++      await sendMessage.mutateAsync({ conversationId: conversation.id, message: reply.trim() });
++      setReply('');
++      toast('success', `Antwort über „${conversation.account_name}" gesendet`);
++    } catch {
++      toast('error', 'Senden fehlgeschlagen — ist das Konto angemeldet?');
++    }
++  };
++
++  return (
++    <div className={styles.detail} data-testid="inbox-detail">
++      <div className={styles.detailHeader}>
++        <button className={styles.backBtn} onClick={onClose} data-testid="inbox-detail-back">←</button>
++        <div>
++          <div className={styles.detailName}>{counterpart(conversation)}</div>
++          <div className={styles.detailAd}>{conversation.adTitle ?? 'Anzeige'}</div>
++        </div>
++      </div>
++
++      <div className={styles.receivedVia} data-testid="inbox-detail-account">
++        Empfangen über: <strong>{conversation.account_name}</strong>
++      </div>
++
++      <div className={styles.messages}>
++        {isLoading ? (
++          <div className={styles.center}><Spinner /></div>
++        ) : detail?.messages?.length ? (
++          detail.messages.map((m) => (
++            <div
++              key={m.messageId}
++              className={`${styles.bubble} ${m.boundness === 'OUTBOUND' ? styles.bubbleOut : styles.bubbleIn}`}
++            >
++              {m.textShort}
++            </div>
++          ))
++        ) : (
++          <p className={styles.noMessages}>Keine Nachrichten geladen (Konto ggf. nicht angemeldet).</p>
++        )}
++      </div>
++
++      <div className={styles.replyBar}>
++        <textarea
++          className={styles.replyInput}
++          placeholder={`Antwort über „${conversation.account_name}"…`}
++          value={reply}
++          onChange={(e) => setReply(e.target.value)}
++          data-testid="inbox-reply-input"
++        />
++        <Button
++          variant="primary"
++          loading={sendMessage.isPending}
++          onClick={handleSend}
++          data-testid="inbox-reply-send"
++        >
++          Senden
++        </Button>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/app/(app)/layout.tsx b/src/app/(app)/layout.tsx
+index 0487346..67ca35e 100644
+--- a/src/app/(app)/layout.tsx
++++ b/src/app/(app)/layout.tsx
+@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
+ import { AppShell } from '@/components/layout/AppShell';
+ import { Spinner } from '@/components/ui';
+ import { MfaOverlay } from '@/components/bot/MfaOverlay';
++import { AccountProvider } from '@/contexts/AccountContext';
+ 
+ /**
+  * App layout: wraps authenticated pages with AppShell (header-only, no sidebar).
+@@ -44,9 +45,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
+   }
+ 
+   return (
+-    <AppShell>
+-      {children}
+-      <MfaOverlay />
+-    </AppShell>
++    <AccountProvider>
++      <AppShell>
++        {children}
++        <MfaOverlay />
++      </AppShell>
++    </AccountProvider>
+   );
+ }
+diff --git a/src/app/api/accounts/[accountId]/credentials/route.ts b/src/app/api/accounts/[accountId]/credentials/route.ts
+new file mode 100644
+index 0000000..cfb9b59
+--- /dev/null
++++ b/src/app/api/accounts/[accountId]/credentials/route.ts
+@@ -0,0 +1,72 @@
++import { handleApiError } from '@/lib/api/error-handler';
++import { NextRequest, NextResponse } from 'next/server';
++import { getCurrentUser } from '@/lib/auth/middleware';
++import {
++  getAccountById,
++  accountWorkspace,
++  setAccountCredentials,
++  computeLoginStatus,
++  clearAccountSession,
++} from '@/lib/accounts/accounts';
++import { isEnvPlaceholder, readConfig } from '@/lib/yaml/config';
++
++interface RouteContext {
++  params: Promise<{ accountId: string }>;
++}
++
++const MASKED = '••••••••';
++
++/** GET: return the account's KA username + whether a password is stored (never the password itself). */
++export async function GET(request: NextRequest, context: RouteContext) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++    const { accountId } = await context.params;
++    const account = getAccountById(user.userWorkspace, accountId);
++    if (!account) {
++      return NextResponse.json({ detail: 'Konto nicht gefunden' }, { status: 404 });
++    }
++    const ws = accountWorkspace(user.userWorkspace, account);
++    const login = (readConfig(ws).login as Record<string, string>) ?? {};
++    return NextResponse.json({
++      username: isEnvPlaceholder(login.username) ? '' : login.username ?? '',
++      password: login.password ? MASKED : '',
++      login_status: computeLoginStatus(ws),
++    });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
++
++/** PUT: set the Kleinanzeigen login credentials for this account (isolated; never synced to app login). */
++export async function PUT(request: NextRequest, context: RouteContext) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++    const { accountId } = await context.params;
++    const account = getAccountById(user.userWorkspace, accountId);
++    if (!account) {
++      return NextResponse.json({ detail: 'Konto nicht gefunden' }, { status: 404 });
++    }
++
++    const body = await request.json().catch(() => ({}));
++    const username = typeof body.username === 'string' ? body.username.trim() : '';
++    const password = typeof body.password === 'string' && body.password !== MASKED ? body.password : '';
++    if (!username) {
++      return NextResponse.json({ detail: 'Benutzername (E-Mail) ist erforderlich' }, { status: 400 });
++    }
++
++    const ws = accountWorkspace(user.userWorkspace, account);
++    setAccountCredentials(ws, username, password);
++    // New credentials invalidate any cached session so the next login uses them.
++    if (password) clearAccountSession(ws);
++
++    return NextResponse.json({ status: 'ok', login_status: computeLoginStatus(ws) });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
+diff --git a/src/app/api/accounts/[accountId]/disconnect/route.ts b/src/app/api/accounts/[accountId]/disconnect/route.ts
+new file mode 100644
+index 0000000..0a0a87f
+--- /dev/null
++++ b/src/app/api/accounts/[accountId]/disconnect/route.ts
+@@ -0,0 +1,40 @@
++import { handleApiError } from '@/lib/api/error-handler';
++import { NextRequest, NextResponse } from 'next/server';
++import { getCurrentUser } from '@/lib/auth/middleware';
++import {
++  getAccountById,
++  accountWorkspace,
++  clearAccountSession,
++  computeLoginStatus,
++} from '@/lib/accounts/accounts';
++
++interface RouteContext {
++  params: Promise<{ accountId: string }>;
++}
++
++/** POST: disconnect an account — kill its live session and clear cookies/profile (keeps credentials). */
++export async function POST(request: NextRequest, context: RouteContext) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++
++    const { accountId } = await context.params;
++    const account = getAccountById(user.userWorkspace, accountId);
++    if (!account) {
++      return NextResponse.json({ detail: 'Konto nicht gefunden' }, { status: 404 });
++    }
++
++    const ws = accountWorkspace(user.userWorkspace, account);
++    try {
++      const { stopSession } = await import('@/lib/messaging/gateway');
++      stopSession(ws);
++    } catch { /* no session */ }
++    clearAccountSession(ws);
++
++    return NextResponse.json({ status: 'ok', login_status: computeLoginStatus(ws) });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
+diff --git a/src/app/api/accounts/[accountId]/route.ts b/src/app/api/accounts/[accountId]/route.ts
+new file mode 100644
+index 0000000..e4601e7
+--- /dev/null
++++ b/src/app/api/accounts/[accountId]/route.ts
+@@ -0,0 +1,76 @@
++import { handleApiError } from '@/lib/api/error-handler';
++import { NextRequest, NextResponse } from 'next/server';
++import { getCurrentUser } from '@/lib/auth/middleware';
++import {
++  getAccountById,
++  updateAccount,
++  removeAccount,
++  accountWorkspace,
++  clearAccountSession,
++} from '@/lib/accounts/accounts';
++
++interface RouteContext {
++  params: Promise<{ accountId: string }>;
++}
++
++export async function PATCH(request: NextRequest, context: RouteContext) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++
++    const { accountId } = await context.params;
++    const account = getAccountById(user.userWorkspace, accountId);
++    if (!account) {
++      return NextResponse.json({ detail: 'Konto nicht gefunden' }, { status: 404 });
++    }
++
++    const body = await request.json().catch(() => ({}));
++    const updates: Record<string, unknown> = {};
++    if (typeof body.display_name === 'string') updates.display_name = body.display_name;
++    if (typeof body.republish_default_days === 'number') {
++      updates.republish_default_days = Math.max(1, Math.round(body.republish_default_days));
++    }
++
++    const updated = updateAccount(user.userWorkspace, accountId, updates);
++    return NextResponse.json({ account: updated });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
++
++export async function DELETE(request: NextRequest, context: RouteContext) {  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++
++    const { accountId } = await context.params;
++    const account = getAccountById(user.userWorkspace, accountId);
++    if (!account) {
++      return NextResponse.json({ detail: 'Konto nicht gefunden' }, { status: 404 });
++    }
++    if (account.is_default) {
++      return NextResponse.json(
++        { detail: 'Das Standardkonto kann nicht entfernt werden.' },
++        { status: 400 },
++      );
++    }
++
++    // Kill any live messaging session for this workspace before deleting files.
++    const ws = accountWorkspace(user.userWorkspace, account);
++    try {
++      const { stopSession } = await import('@/lib/messaging/gateway');
++      stopSession(ws);
++    } catch { /* no session */ }
++    clearAccountSession(ws);
++
++    removeAccount(user.userWorkspace, accountId);
++    return NextResponse.json({ status: 'ok' });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
++
++export { PATCH as PUT };
+diff --git a/src/app/api/accounts/overview/route.ts b/src/app/api/accounts/overview/route.ts
+new file mode 100644
+index 0000000..9d961ad
+--- /dev/null
++++ b/src/app/api/accounts/overview/route.ts
+@@ -0,0 +1,114 @@
++import { handleApiError } from '@/lib/api/error-handler';
++import { NextRequest, NextResponse } from 'next/server';
++import { getCurrentUser } from '@/lib/auth/middleware';
++import {
++  loadAccounts,
++  accountWorkspace,
++  computeLoginStatus,
++  hasSession,
++} from '@/lib/accounts/accounts';
++import { findAdFiles, readAd } from '@/lib/yaml/ads';
++import path from 'path';
++
++interface RecentAd {
++  account_id: string;
++  account_name: string;
++  title: string;
++  id: number | null;
++  active: boolean;
++  created_on: string | null;
++  updated_on: string | null;
++}
++
++async function accountUnread(workspace: string): Promise<number | null> {
++  if (!hasSession(workspace)) return null;
++  try {
++    const { listConversations } = await import('@/lib/messaging/gateway');
++    const data = await Promise.race([
++      listConversations(workspace, 0, 1),
++      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
++    ]);
++    return (data as { numUnreadMessages?: number }).numUnreadMessages ?? 0;
++  } catch {
++    return null;
++  }
++}
++
++export async function GET(request: NextRequest) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++
++    const accounts = loadAccounts(user.userWorkspace);
++    const recent: RecentAd[] = [];
++
++    const perAccount = await Promise.all(
++      accounts.map(async (account) => {
++        const ws = accountWorkspace(user.userWorkspace, account);
++        let ad_count = 0;
++        let active_ads = 0;
++        let automations = 0;
++        let login_status = 'disconnected';
++        let unread: number | null = null;
++        try {
++          login_status = computeLoginStatus(ws);
++          const files = findAdFiles(ws);
++          ad_count = files.length;
++          for (const fp of files) {
++            let ad: Record<string, unknown> = {};
++            try { ad = readAd(fp); } catch { continue; }
++            const active = ad.active !== false;
++            if (active) active_ads += 1;
++            if (ad.republication_interval != null) automations += 1;
++            recent.push({
++              account_id: account.id,
++              account_name: account.display_name,
++              title: (ad.title as string) ?? path.basename(fp, '.yaml'),
++              id: (ad.id as number) ?? null,
++              active,
++              created_on: (ad.created_on as string) ?? null,
++              updated_on: (ad.updated_on as string) ?? null,
++            });
++          }
++          unread = await accountUnread(ws);
++        } catch { /* isolate per-account failures */ }
++
++        return {
++          id: account.id,
++          display_name: account.display_name,
++          is_default: account.is_default,
++          login_status,
++          ad_count,
++          active_ads,
++          automations,
++          unread,
++          last_sync: account.last_sync,
++        };
++      }),
++    );
++
++    recent.sort((a, b) => {
++      const ta = Date.parse(a.updated_on ?? a.created_on ?? '') || 0;
++      const tb = Date.parse(b.updated_on ?? b.created_on ?? '') || 0;
++      return tb - ta;
++    });
++
++    const totals = {
++      accounts: accounts.length,
++      connected: perAccount.filter((a) => a.login_status === 'connected').length,
++      active_ads: perAccount.reduce((s, a) => s + a.active_ads, 0),
++      unread: perAccount.reduce((s, a) => s + (a.unread ?? 0), 0),
++      automations: perAccount.reduce((s, a) => s + a.automations, 0),
++    };
++
++    return NextResponse.json({
++      totals,
++      accounts: perAccount,
++      recent_ads: recent.slice(0, 10),
++    });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
+diff --git a/src/app/api/accounts/route.ts b/src/app/api/accounts/route.ts
+new file mode 100644
+index 0000000..7b4b362
+--- /dev/null
++++ b/src/app/api/accounts/route.ts
+@@ -0,0 +1,96 @@
++import { handleApiError } from '@/lib/api/error-handler';
++import { NextRequest, NextResponse } from 'next/server';
++import { getCurrentUser } from '@/lib/auth/middleware';
++import {
++  loadAccounts,
++  accountWorkspace,
++  computeLoginStatus,
++  createAccount,
++  hasSession,
++} from '@/lib/accounts/accounts';
++import { findAdFiles } from '@/lib/yaml/ads';
++
++/** Best-effort unread count — never launches a browser and never throws. */
++async function accountUnread(workspace: string): Promise<number | null> {
++  if (!hasSession(workspace)) return null;
++  try {
++    const { listConversations } = await import('@/lib/messaging/gateway');
++    const data = await Promise.race([
++      listConversations(workspace, 0, 1),
++      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
++    ]);
++    return (data as { numUnreadMessages?: number }).numUnreadMessages ?? 0;
++  } catch {
++    return null;
++  }
++}
++
++function activeAdCount(workspace: string): number {
++  try {
++    return findAdFiles(workspace).length;
++  } catch {
++    return 0;
++  }
++}
++
++export async function GET(request: NextRequest) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++
++    const accounts = loadAccounts(user.userWorkspace);
++    const result = await Promise.all(
++      accounts.map(async (account) => {
++        const ws = accountWorkspace(user.userWorkspace, account);
++        // One account failing must never break the others.
++        let login_status: string;
++        let ad_count = 0;
++        let unread: number | null = null;
++        try {
++          login_status = computeLoginStatus(ws);
++          ad_count = activeAdCount(ws);
++          unread = await accountUnread(ws);
++        } catch {
++          login_status = 'disconnected';
++        }
++        return {
++          id: account.id,
++          display_name: account.display_name,
++          is_default: account.is_default,
++          created_at: account.created_at,
++          last_sync: account.last_sync,
++          republish_default_days: account.republish_default_days,
++          login_status,
++          ad_count,
++          unread,
++        };
++      }),
++    );
++
++    return NextResponse.json({ accounts: result, total: result.length });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
++
++export async function POST(request: NextRequest) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++
++    const body = await request.json().catch(() => ({}));
++    const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : '';
++    if (!displayName) {
++      return NextResponse.json({ detail: 'Anzeigename ist erforderlich' }, { status: 400 });
++    }
++
++    const account = createAccount(user.userWorkspace, displayName);
++    return NextResponse.json({ account });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
+diff --git a/src/app/api/ads/from-template/[slug]/route.ts b/src/app/api/ads/from-template/[slug]/route.ts
+index 8ced440..e4fcc0e 100644
+--- a/src/app/api/ads/from-template/[slug]/route.ts
++++ b/src/app/api/ads/from-template/[slug]/route.ts
+@@ -19,7 +19,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
+     }
+ 
+     const { slug } = await context.params;
+-    const templatesDir = getTemplatesDir(user.workspace);
++    const templatesDir = getTemplatesDir(user.userWorkspace);
+     const filePath = findTemplateFile(templatesDir, slug);
+ 
+     if (!filePath) {
+@@ -46,7 +46,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
+     const tplDir = path.join(templatesDir, `tpl_${slug}`);
+     const isDirBased = filePath === path.join(tplDir, `tpl_${slug}.yaml`);
+     const sourceAdFile = isDirBased
+-      ? toNFC(path.relative(user.workspace, filePath))
++      ? toNFC(path.relative(user.userWorkspace, filePath))
+       : ((data._source_ad_file as string) ?? null);
+ 
+     // Translate legacy API values → display text (templates saved before normalization)
+diff --git a/src/app/api/ads/route.ts b/src/app/api/ads/route.ts
+index 8036209..ed23e0b 100644
+--- a/src/app/api/ads/route.ts
++++ b/src/app/api/ads/route.ts
+@@ -233,7 +233,7 @@ export async function POST(request: NextRequest) {
+     // Copy images from template dir to new ad dir
+     if (templateSlug && (data.images as string[])?.length > 0) {
+       const { existsSync, copyFileSync } = await import('fs');
+-      const tplImagesDir = path.join(getTemplatesDir(ws), `tpl_${templateSlug}`);
++      const tplImagesDir = path.join(getTemplatesDir(user.userWorkspace), `tpl_${templateSlug}`);
+       if (existsSync(tplImagesDir)) {
+         for (const imgName of data.images as string[]) {
+           const src = path.join(tplImagesDir, imgName);
+diff --git a/src/app/api/inbox/route.ts b/src/app/api/inbox/route.ts
+new file mode 100644
+index 0000000..de77465
+--- /dev/null
++++ b/src/app/api/inbox/route.ts
+@@ -0,0 +1,79 @@
++import { handleApiError } from '@/lib/api/error-handler';
++import { NextRequest, NextResponse } from 'next/server';
++import { getCurrentUser } from '@/lib/auth/middleware';
++import { loadAccounts, accountWorkspace, hasSession } from '@/lib/accounts/accounts';
++import type { Conversation } from '@/types/message';
++
++interface InboxConversation extends Conversation {
++  account_id: string;
++  account_name: string;
++}
++
++/**
++ * Unified inbox across ALL connected Kleinanzeigen accounts.
++ *
++ * Every conversation retains its account association (account_id + account_name)
++ * so a reply can always be routed back through the ORIGINATING account's session
++ * (the frontend sends x-account-id = conversation.account_id when replying).
++ *
++ * One account failing (session expired, not logged in) never breaks the others.
++ */
++export async function GET(request: NextRequest) {
++  try {
++    const user = await getCurrentUser(request);
++    if (!user) {
++      return NextResponse.json({ detail: 'Authentication required' }, { status: 401 });
++    }
++
++    const params = new URL(request.url).searchParams;
++    const filterAccount = params.get('account'); // optional: scope to one account
++    const size = Math.min(parseInt(params.get('size') ?? '50', 10) || 50, 100);
++
++    const accounts = loadAccounts(user.userWorkspace).filter(
++      (a) => !filterAccount || a.id === filterAccount,
++    );
++
++    const { listConversations } = await import('@/lib/messaging/gateway');
++
++    const all: InboxConversation[] = [];
++    const errors: Array<{ account_id: string; account_name: string; error: string }> = [];
++    let totalUnread = 0;
++
++    await Promise.all(
++      accounts.map(async (account) => {
++        const ws = accountWorkspace(user.userWorkspace, account);
++        // Only query accounts with a persisted session — avoids launching browsers
++        // for disconnected accounts during a passive inbox load.
++        if (!hasSession(ws)) return;
++        try {
++          const data = await Promise.race([
++            listConversations(ws, 0, size),
++            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
++          ]);
++          const resp = data as { conversations?: Conversation[]; numUnreadMessages?: number };
++          totalUnread += resp.numUnreadMessages ?? 0;
++          for (const c of resp.conversations ?? []) {
++            all.push({ ...c, account_id: account.id, account_name: account.display_name });
++          }
++        } catch (e) {
++          errors.push({
++            account_id: account.id,
++            account_name: account.display_name,
++            error: (e as Error).message,
++          });
++        }
++      }),
++    );
++
++    all.sort((a, b) => Date.parse(b.receivedDate ?? '') - Date.parse(a.receivedDate ?? ''));
++
++    return NextResponse.json({
++      conversations: all,
++      numUnreadMessages: totalUnread,
++      total: all.length,
++      errors,
++    });
++  } catch (error) {
++    return handleApiError(error);
++  }
++}
+diff --git a/src/app/api/templates/[slug]/route.ts b/src/app/api/templates/[slug]/route.ts
+index 9b690df..64292e9 100644
+--- a/src/app/api/templates/[slug]/route.ts
++++ b/src/app/api/templates/[slug]/route.ts
+@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
+     }
+ 
+     const { slug } = await context.params;
+-    const templatesDir = getTemplatesDir(user.workspace);
++    const templatesDir = getTemplatesDir(user.userWorkspace);
+     const filePath = findTemplateFile(templatesDir, slug);
+ 
+     if (!filePath) {
+@@ -53,7 +53,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
+     }
+ 
+     const { slug } = await context.params;
+-    const templatesDir = getTemplatesDir(user.workspace);
++    const templatesDir = getTemplatesDir(user.userWorkspace);
+     const filePath = findTemplateFile(templatesDir, slug);
+ 
+     if (!filePath) {
+@@ -105,7 +105,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
+     }
+ 
+     const { slug } = await context.params;
+-    const templatesDir = getTemplatesDir(user.workspace);
++    const templatesDir = getTemplatesDir(user.userWorkspace);
+     const filePath = findTemplateFile(templatesDir, slug);
+ 
+     if (!filePath) {
+diff --git a/src/app/api/templates/route.ts b/src/app/api/templates/route.ts
+index 793594a..eb42ffd 100644
+--- a/src/app/api/templates/route.ts
++++ b/src/app/api/templates/route.ts
+@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
+     }
+ 
+     const templates = [];
+-    for (const filePath of findTemplateFiles(user.workspace)) {
++    for (const filePath of findTemplateFiles(user.userWorkspace)) {
+       const data = readAd(filePath);
+       const slug = path.basename(filePath, '.yaml').replace(/^tpl_/, '');
+       templates.push({
+@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
+         description: data._template_description ?? '',
+         locked_fields: data._locked_fields ?? [],
+         category: data.category ?? '',
+-        file: toNFC(path.relative(user.workspace, filePath)),
++        file: toNFC(path.relative(user.userWorkspace, filePath)),
+       });
+     }
+ 
+@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
+       return NextResponse.json({ detail: 'Invalid template name' }, { status: 400 });
+     }
+ 
+-    const templatesDir = getTemplatesDir(user.workspace);
++    const templatesDir = getTemplatesDir(user.userWorkspace);
+     fs.mkdirSync(templatesDir, { recursive: true });
+ 
+     // Dir-based template: ads/templates/tpl_{slug}/tpl_{slug}.yaml
+@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
+     return NextResponse.json({
+       message: 'Template created',
+       slug,
+-      file: toNFC(path.relative(user.workspace, filePath)),
++      file: toNFC(path.relative(user.userWorkspace, filePath)),
+     });
+   } catch (error) {
+     return handleApiError(error);
+diff --git a/src/components/dashboard/MultiAccountOverview.module.scss b/src/components/dashboard/MultiAccountOverview.module.scss
+new file mode 100644
+index 0000000..9bd6d38
+--- /dev/null
++++ b/src/components/dashboard/MultiAccountOverview.module.scss
+@@ -0,0 +1,141 @@
++.wrap {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-4);
++  margin-bottom: var(--space-6);
++}
++
++.loading {
++  display: flex;
++  justify-content: center;
++  padding: var(--space-8);
++}
++
++.tiles {
++  display: grid;
++  grid-template-columns: repeat(4, 1fr);
++  gap: var(--space-4);
++
++  @media (max-width: 768px) {
++    grid-template-columns: repeat(2, 1fr);
++  }
++}
++
++.tile {
++  text-align: left;
++}
++
++.tileValue {
++  display: block;
++  font-size: var(--font-size-2xl, 1.7rem);
++  font-weight: var(--font-bold);
++  color: var(--text-primary);
++  line-height: 1.1;
++}
++
++.tileLabel {
++  display: block;
++  margin-top: var(--space-1);
++  font-size: var(--font-size-xs);
++  color: var(--text-muted);
++}
++
++.columns {
++  display: grid;
++  grid-template-columns: 1fr 1fr;
++  gap: var(--space-4);
++
++  @media (max-width: 768px) {
++    grid-template-columns: 1fr;
++  }
++}
++
++.panel {
++  min-height: 0;
++}
++
++.accountList,
++.recentList {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-2);
++}
++
++.accountRow {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-1);
++  width: 100%;
++  padding: var(--space-3);
++  border: 1px solid var(--border-color);
++  border-radius: var(--radius-md);
++  background: transparent;
++  cursor: pointer;
++  text-align: left;
++  transition: background-color var(--transition-fast), border-color var(--transition-fast);
++
++  &:hover { background: var(--bg-hover); }
++}
++
++.accountRowActive {
++  border-color: var(--accent);
++  background: var(--bg-hover);
++}
++
++.accountMain {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: var(--space-2);
++}
++
++.accountName {
++  font-weight: var(--font-semibold);
++  color: var(--text-primary);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.accountMeta {
++  display: flex;
++  gap: var(--space-4);
++  font-size: var(--font-size-xs);
++  color: var(--text-muted);
++}
++
++.unread { color: var(--accent); font-weight: var(--font-semibold); }
++
++.recentRow {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: var(--space-2);
++  padding: var(--space-2) var(--space-3);
++  border-radius: var(--radius-md);
++  background: var(--bg-tertiary);
++}
++
++.recentTitle {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++  font-size: var(--font-size-sm);
++  color: var(--text-primary);
++}
++
++.empty {
++  font-size: var(--font-size-sm);
++  color: var(--text-muted);
++}
++
++.manageLink {
++  align-self: flex-start;
++  border: none;
++  background: transparent;
++  color: var(--accent);
++  font-size: var(--font-size-sm);
++  font-weight: var(--font-semibold);
++  cursor: pointer;
++  padding: var(--space-1) 0;
++}
+diff --git a/src/components/dashboard/MultiAccountOverview.tsx b/src/components/dashboard/MultiAccountOverview.tsx
+new file mode 100644
+index 0000000..df6abfe
+--- /dev/null
++++ b/src/components/dashboard/MultiAccountOverview.tsx
+@@ -0,0 +1,105 @@
++'use client';
++
++import { useRouter } from 'next/navigation';
++import { Card, Badge, Spinner } from '@/components/ui';
++import { useAccount } from '@/contexts/AccountContext';
++import { useAccountsOverview } from '@/hooks/useAccounts';
++import styles from './MultiAccountOverview.module.scss';
++
++const STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'muted' }> = {
++  connected: { label: 'Verbunden', variant: 'success' },
++  disconnected: { label: 'Getrennt', variant: 'warning' },
++  no_credentials: { label: 'Keine Daten', variant: 'muted' },
++};
++
++/** Cross-account dashboard: totals + a compact per-account overview. */
++export function MultiAccountOverview() {
++  const { data, isLoading } = useAccountsOverview();
++  const { setActiveAccount, activeAccountId } = useAccount();
++  const router = useRouter();
++
++  if (isLoading || !data) {
++    return (
++      <div className={styles.loading}><Spinner size="lg" /></div>
++    );
++  }
++
++  const { totals, accounts, recent_ads } = data;
++
++  const tiles = [
++    { label: 'Konten verbunden', value: `${totals.connected}/${totals.accounts}` },
++    { label: 'Aktive Anzeigen', value: totals.active_ads },
++    { label: 'Ungelesene Nachrichten', value: totals.unread },
++    { label: 'Automatisierungen', value: totals.automations },
++  ];
++
++  return (
++    <div className={styles.wrap} data-testid="multi-account-overview">
++      <div className={styles.tiles}>
++        {tiles.map((t) => (
++          <Card key={t.label} className={styles.tile}>
++            <Card.Body>
++              <span className={styles.tileValue}>{t.value}</span>
++              <span className={styles.tileLabel}>{t.label}</span>
++            </Card.Body>
++          </Card>
++        ))}
++      </div>
++
++      <div className={styles.columns}>
++        <Card className={styles.panel}>
++          <Card.Header><Card.Title>Konten-Übersicht</Card.Title></Card.Header>
++          <Card.Body>
++            <div className={styles.accountList} data-testid="overview-account-list">
++              {accounts.map((a) => {
++                const status = STATUS[a.login_status] ?? STATUS.disconnected;
++                return (
++                  <button
++                    key={a.id}
++                    type="button"
++                    className={`${styles.accountRow} ${a.id === activeAccountId ? styles.accountRowActive : ''}`}
++                    onClick={() => setActiveAccount(a.id)}
++                    data-testid={`overview-account-${a.id}`}
++                  >
++                    <div className={styles.accountMain}>
++                      <span className={styles.accountName}>{a.display_name}</span>
++                      <Badge variant={status.variant}>{status.label}</Badge>
++                    </div>
++                    <div className={styles.accountMeta}>
++                      <span>{a.active_ads} Anzeigen</span>
++                      <span className={a.unread ? styles.unread : ''}>
++                        {a.unread ?? 0} ungelesen
++                      </span>
++                    </div>
++                  </button>
++                );
++              })}
++            </div>
++          </Card.Body>
++        </Card>
++
++        <Card className={styles.panel}>
++          <Card.Header><Card.Title>Zuletzt veröffentlicht</Card.Title></Card.Header>
++          <Card.Body>
++            {recent_ads.length === 0 ? (
++              <p className={styles.empty}>Noch keine Anzeigen.</p>
++            ) : (
++              <div className={styles.recentList} data-testid="overview-recent-list">
++                {recent_ads.map((r, i) => (
++                  <div key={`${r.account_id}-${r.id ?? i}`} className={styles.recentRow}>
++                    <span className={styles.recentTitle}>{r.title}</span>
++                    <Badge variant="info">{r.account_name}</Badge>
++                  </div>
++                ))}
++              </div>
++            )}
++          </Card.Body>
++        </Card>
++      </div>
++
++      <button className={styles.manageLink} onClick={() => router.push('/accounts')} data-testid="overview-manage-accounts">
++        Alle Konten verwalten →
++      </button>
++    </div>
++  );
++}
+diff --git a/src/components/layout/AccountSwitcher.module.scss b/src/components/layout/AccountSwitcher.module.scss
+new file mode 100644
+index 0000000..a4ad687
+--- /dev/null
++++ b/src/components/layout/AccountSwitcher.module.scss
+@@ -0,0 +1,136 @@
++.switcher {
++  position: relative;
++  display: flex;
++  align-items: center;
++}
++
++.trigger {
++  display: flex;
++  align-items: center;
++  gap: var(--space-2);
++  padding: var(--space-1-5) var(--space-2-5, var(--space-2));
++  border-radius: var(--radius-md);
++  border: 1px solid var(--border-color);
++  background: var(--bg-tertiary);
++  color: var(--text-primary);
++  font-size: var(--font-size-xs);
++  font-weight: var(--font-semibold);
++  cursor: pointer;
++  transition: background-color var(--transition-fast), border-color var(--transition-fast);
++  max-width: 200px;
++
++  &:hover {
++    background: var(--bg-hover);
++    border-color: var(--border-color-hover);
++  }
++}
++
++.name {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++  max-width: 130px;
++}
++
++.chevron {
++  flex-shrink: 0;
++  color: var(--text-muted);
++}
++
++.dot {
++  width: 8px;
++  height: 8px;
++  border-radius: 50%;
++  flex-shrink: 0;
++  background: var(--text-muted);
++}
++
++.dotConnected { background: var(--green, #22c55e); box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18); }
++.dotDisconnected { background: var(--yellow, #eab308); }
++.dotNone { background: var(--text-muted); }
++
++.menu {
++  position: absolute;
++  top: calc(100% + var(--space-2));
++  left: 0;
++  min-width: 260px;
++  max-width: min(320px, calc(100vw - 2 * var(--space-3)));
++  background: var(--bg-elevated);
++  border: 1px solid var(--border-color);
++  border-radius: var(--radius-lg);
++  box-shadow: var(--shadow-lg);
++  padding: var(--space-2);
++  z-index: var(--z-dropdown);
++  animation: fadeIn var(--duration-fast) var(--ease-out);
++
++  @media (max-width: 560px) {
++    left: auto;
++    right: 0;
++  }
++}
++
++.menuLabel {
++  font-size: var(--font-size-xs);
++  color: var(--text-muted);
++  text-transform: uppercase;
++  letter-spacing: 0.06em;
++  padding: var(--space-1) var(--space-2) var(--space-2);
++}
++
++.item {
++  display: flex;
++  align-items: center;
++  gap: var(--space-2);
++  width: 100%;
++  min-height: 44px;
++  padding: var(--space-2);
++  border: none;
++  border-radius: var(--radius-md);
++  background: transparent;
++  color: var(--text-primary);
++  cursor: pointer;
++  text-align: left;
++  transition: background-color var(--transition-fast);
++
++  &:hover { background: var(--bg-hover); }
++}
++
++.itemActive { background: var(--bg-hover); }
++
++.itemName {
++  flex: 1;
++  font-size: var(--font-size-sm);
++  font-weight: var(--font-semibold);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.itemMeta {
++  font-size: var(--font-size-xs);
++  color: var(--text-muted);
++  flex-shrink: 0;
++}
++
++.separator {
++  height: 1px;
++  background: var(--border-color);
++  margin: var(--space-2) 0;
++}
++
++.manage {
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  width: 100%;
++  min-height: 40px;
++  border: none;
++  border-radius: var(--radius-md);
++  background: transparent;
++  color: var(--accent);
++  font-size: var(--font-size-sm);
++  font-weight: var(--font-semibold);
++  cursor: pointer;
++
++  &:hover { background: var(--bg-hover); }
++}
+diff --git a/src/components/layout/AccountSwitcher.tsx b/src/components/layout/AccountSwitcher.tsx
+new file mode 100644
+index 0000000..c5f48a9
+--- /dev/null
++++ b/src/components/layout/AccountSwitcher.tsx
+@@ -0,0 +1,92 @@
++'use client';
++
++import { useEffect, useRef, useState } from 'react';
++import { useRouter } from 'next/navigation';
++import { useAccount } from '@/contexts/AccountContext';
++import styles from './AccountSwitcher.module.scss';
++
++const STATUS_DOT: Record<string, string> = {
++  connected: styles.dotConnected,
++  disconnected: styles.dotDisconnected,
++  no_credentials: styles.dotNone,
++};
++
++/**
++ * Header account switcher: selects the ACTIVE Kleinanzeigen account. Every
++ * account-scoped request is then routed to that account's isolated session.
++ */
++export function AccountSwitcher() {
++  const { accounts, activeAccount, setActiveAccount } = useAccount();
++  const [open, setOpen] = useState(false);
++  const ref = useRef<HTMLDivElement>(null);
++  const router = useRouter();
++
++  useEffect(() => {
++    if (!open) return;
++    const onClick = (e: MouseEvent) => {
++      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
++    };
++    document.addEventListener('click', onClick);
++    return () => document.removeEventListener('click', onClick);
++  }, [open]);
++
++  if (!accounts.length) return null;
++
++  return (
++    <div className={styles.switcher} ref={ref} data-testid="account-switcher">
++      <button
++        type="button"
++        className={styles.trigger}
++        onClick={(e) => {
++          e.stopPropagation();
++          setOpen((v) => !v);
++        }}
++        title="Kleinanzeigen-Konto wechseln"
++        data-testid="account-switcher-trigger"
++      >
++        <span className={`${styles.dot} ${STATUS_DOT[activeAccount?.login_status ?? 'disconnected']}`} />
++        <span className={styles.name}>{activeAccount?.display_name ?? 'Konto'}</span>
++        <svg className={styles.chevron} viewBox="0 0 24 24" width="14" height="14">
++          <polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" strokeWidth="2" />
++        </svg>
++      </button>
++
++      {open && (
++        <div className={styles.menu} data-testid="account-switcher-menu">
++          <div className={styles.menuLabel}>Kleinanzeigen-Konten</div>
++          {accounts.map((a) => (
++            <button
++              key={a.id}
++              type="button"
++              className={`${styles.item} ${a.id === activeAccount?.id ? styles.itemActive : ''}`}
++              onClick={() => {
++                setActiveAccount(a.id);
++                setOpen(false);
++              }}
++              data-testid={`account-option-${a.id}`}
++            >
++              <span className={`${styles.dot} ${STATUS_DOT[a.login_status]}`} />
++              <span className={styles.itemName}>{a.display_name}</span>
++              <span className={styles.itemMeta}>
++                {a.ad_count} Anz.
++                {a.unread ? ` · ${a.unread} neu` : ''}
++              </span>
++            </button>
++          ))}
++          <div className={styles.separator} />
++          <button
++            type="button"
++            className={styles.manage}
++            onClick={() => {
++              setOpen(false);
++              router.push('/accounts');
++            }}
++            data-testid="account-switcher-manage"
++          >
++            + Konten verwalten
++          </button>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/src/components/layout/Header.tsx b/src/components/layout/Header.tsx
+index e7d4fd5..ac5f0c5 100644
+--- a/src/components/layout/Header.tsx
++++ b/src/components/layout/Header.tsx
+@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
+ import Link from 'next/link';
+ import { ThemeSwitcher } from './ThemeSwitcher';
+ import { ProfileMenu } from './ProfileMenu';
++import { AccountSwitcher } from './AccountSwitcher';
+ import { CreateAdModal } from '@/components/ads/CreateAdModal';
+ import { Badge } from '@/components/ui/Badge/Badge';
+ import { useUnreadCount, useResponderStatus } from '@/hooks/useMessages';
+@@ -14,6 +15,8 @@ import styles from './Header.module.scss';
+ 
+ const PAGE_TITLES: Record<string, string> = {
+   '/dashboard': 'Dashboard',
++  '/accounts': 'Konten',
++  '/inbox': 'Postfach',
+   '/ads': 'Anzeigen',
+   '/ads/new': 'Neue Anzeige',
+   '/ads/edit': 'Anzeige bearbeiten',
+@@ -113,6 +116,7 @@ export function Header() {
+           </Link>
+         )}
+         <h1 className={styles.headerTitle}>{title}</h1>
++        <AccountSwitcher />
+       </div>
+ 
+       {/* Mobile hamburger */}
+@@ -171,6 +175,38 @@ export function Header() {
+         {/* Messages link with unread badge */}
+         <MessagesLink onClose={() => setMobileOpen(false)} />
+ 
++        {/* Central inbox (all accounts) */}
++        <Link
++          href="/inbox"
++          className={styles.headerDropdownBtn}
++          onClick={() => setMobileOpen(false)}
++        >
++          <span className={styles.headerDropdownBtnIcon}>
++            <svg viewBox="0 0 24 24">
++              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
++              <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
++            </svg>
++          </span>
++          <span className={styles.navLabel}>Postfach</span>
++        </Link>
++
++        {/* Accounts management */}
++        <Link
++          href="/accounts"
++          className={styles.headerDropdownBtn}
++          onClick={() => setMobileOpen(false)}
++        >
++          <span className={styles.headerDropdownBtnIcon}>
++            <svg viewBox="0 0 24 24">
++              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
++              <circle cx="9" cy="7" r="4" />
++              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
++              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
++            </svg>
++          </span>
++          <span className={styles.navLabel}>Konten</span>
++        </Link>
++
+         {/* Dashboard link */}
+         <Link
+           href="/dashboard"
+diff --git a/src/contexts/AccountContext.tsx b/src/contexts/AccountContext.tsx
+new file mode 100644
+index 0000000..1b2d599
+--- /dev/null
++++ b/src/contexts/AccountContext.tsx
+@@ -0,0 +1,93 @@
++'use client';
++
++import { createContext, useContext, useEffect, useMemo, useState } from 'react';
++import { useQuery, useQueryClient } from '@tanstack/react-query';
++import { api } from '@/lib/api/client';
++
++export interface AccountSummary {
++  id: string;
++  display_name: string;
++  is_default: boolean;
++  created_at?: string;
++  last_sync: string | null;
++  republish_default_days: number;
++  login_status: 'connected' | 'disconnected' | 'no_credentials';
++  ad_count: number;
++  unread: number | null;
++}
++
++interface AccountsResponse {
++  accounts: AccountSummary[];
++  total: number;
++}
++
++interface AccountContextValue {
++  accounts: AccountSummary[];
++  activeAccountId: string | null;
++  activeAccount: AccountSummary | null;
++  setActiveAccount: (id: string) => void;
++  refresh: () => void;
++  isLoading: boolean;
++}
++
++const AccountContext = createContext<AccountContextValue>({
++  accounts: [],
++  activeAccountId: null,
++  activeAccount: null,
++  setActiveAccount: () => {},
++  refresh: () => {},
++  isLoading: true,
++});
++
++const STORAGE_KEY = 'active_account_id';
++
++export function AccountProvider({ children }: { children: React.ReactNode }) {
++  const queryClient = useQueryClient();
++  const { data, isLoading } = useQuery<AccountsResponse>({
++    queryKey: ['accounts'],
++    queryFn: () => api.get('/api/accounts'),
++    staleTime: 15_000,
++  });
++
++  const accounts = useMemo(() => data?.accounts ?? [], [data]);
++  const [activeAccountId, setActiveIdState] = useState<string | null>(null);
++
++  // Resolve the active account once accounts load; persist so the api client
++  // (which reads localStorage) tags every request with the right account.
++  useEffect(() => {
++    if (!accounts.length) return;
++    const stored = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
++    const valid = stored && accounts.some((a) => a.id === stored);
++    const next = valid ? stored! : accounts.find((a) => a.is_default)?.id ?? accounts[0].id;
++    if (next !== activeAccountId) {
++      setActiveIdState(next);
++      localStorage.setItem(STORAGE_KEY, next);
++    }
++  }, [accounts, activeAccountId]);
++
++  const setActiveAccount = (id: string) => {
++    localStorage.setItem(STORAGE_KEY, id);
++    setActiveIdState(id);
++    // Every account-scoped query must refetch against the newly selected account.
++    queryClient.invalidateQueries();
++  };
++
++  const refresh = () => {
++    queryClient.invalidateQueries({ queryKey: ['accounts'] });
++    queryClient.invalidateQueries({ queryKey: ['accounts-overview'] });
++  };
++
++  const activeAccount = accounts.find((a) => a.id === activeAccountId) ?? null;
++
++  return (
++    <AccountContext.Provider
++      value={{ accounts, activeAccountId, activeAccount, setActiveAccount, refresh, isLoading }}
++    >
++      {children}
++    </AccountContext.Provider>
++  );
++}
++
++export function useAccount() {
++  return useContext(AccountContext);
++}
+diff --git a/src/hooks/useAccounts.ts b/src/hooks/useAccounts.ts
+new file mode 100644
+index 0000000..dfa74a6
+--- /dev/null
++++ b/src/hooks/useAccounts.ts
+@@ -0,0 +1,119 @@
++'use client';
++
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
++import { api } from '@/lib/api/client';
++import type { AccountSummary } from '@/contexts/AccountContext';
++
++export interface AccountOverview {
++  totals: {
++    accounts: number;
++    connected: number;
++    active_ads: number;
++    unread: number;
++    automations: number;
++  };
++  accounts: Array<{
++    id: string;
++    display_name: string;
++    is_default: boolean;
++    login_status: 'connected' | 'disconnected' | 'no_credentials';
++    ad_count: number;
++    active_ads: number;
++    automations: number;
++    unread: number | null;
++    last_sync: string | null;
++  }>;
++  recent_ads: Array<{
++    account_id: string;
++    account_name: string;
++    title: string;
++    id: number | null;
++    active: boolean;
++    created_on: string | null;
++    updated_on: string | null;
++  }>;
++}
++
++export function useAccountsList() {
++  return useQuery<{ accounts: AccountSummary[]; total: number }>({
++    queryKey: ['accounts'],
++    queryFn: () => api.get('/api/accounts'),
++  });
++}
++
++export function useAccountsOverview() {
++  return useQuery<AccountOverview>({
++    queryKey: ['accounts-overview'],
++    queryFn: () => api.get('/api/accounts/overview'),
++    refetchInterval: 60_000,
++  });
++}
++
++function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
++  qc.invalidateQueries({ queryKey: ['accounts'] });
++  qc.invalidateQueries({ queryKey: ['accounts-overview'] });
++}
++
++export function useCreateAccount() {
++  const qc = useQueryClient();
++  return useMutation({
++    mutationFn: (display_name: string) => api.post('/api/accounts', { display_name }),
++    onSuccess: () => invalidateAll(qc),
++  });
++}
++
++export function useUpdateAccount() {
++  const qc = useQueryClient();
++  return useMutation({
++    mutationFn: ({ id, updates }: { id: string; updates: Record<string, unknown> }) =>
++      api.put(`/api/accounts/${id}`, updates),
++    onSuccess: () => invalidateAll(qc),
++  });
++}
++
++export function useDeleteAccount() {
++  const qc = useQueryClient();
++  return useMutation({
++    mutationFn: (id: string) => api.delete(`/api/accounts/${id}`),
++    onSuccess: () => invalidateAll(qc),
++  });
++}
++
++export function useDisconnectAccount() {
++  const qc = useQueryClient();
++  return useMutation({
++    mutationFn: (id: string) => api.post(`/api/accounts/${id}/disconnect`, {}),
++    onSuccess: () => invalidateAll(qc),
++  });
++}
++
++export function useAccountCredentials(id: string | null) {
++  return useQuery<{ username: string; password: string; login_status: string }>({
++    queryKey: ['account-credentials', id],
++    queryFn: () => api.get(`/api/accounts/${id}/credentials`),
++    enabled: !!id,
++  });
++}
++
++export function useSetCredentials() {
++  const qc = useQueryClient();
++  return useMutation({
++    mutationFn: ({ id, username, password }: { id: string; username: string; password: string }) =>
++      api.put(`/api/accounts/${id}/credentials`, { username, password }),
++    onSuccess: (_d, vars) => {
++      invalidateAll(qc);
++      qc.invalidateQueries({ queryKey: ['account-credentials', vars.id] });
++    },
++  });
++}
++
++// PATCH is not exposed by the api client; alias PUT to /api/accounts/:id which
++// the route also handles for display-name/settings updates.
++export function useRenameAccount() {
++  const qc = useQueryClient();
++  return useMutation({
++    mutationFn: ({ id, display_name }: { id: string; display_name: string }) =>
++      api.put(`/api/accounts/${id}`, { display_name }),
++    onSuccess: () => invalidateAll(qc),
++  });
++}
+diff --git a/src/lib/accounts/accounts.ts b/src/lib/accounts/accounts.ts
+new file mode 100644
+index 0000000..0ef74f2
+--- /dev/null
++++ b/src/lib/accounts/accounts.ts
+@@ -0,0 +1,251 @@
++import fs from 'fs';
++import path from 'path';
++import crypto from 'crypto';
++import yaml from 'js-yaml';
++import { readConfig, writeConfig, isEnvPlaceholder } from '@/lib/yaml/config';
++import { SESSION_FILE } from '@/lib/ka/management-api';
++
++/**
++ * Multi-account model.
++ *
++ * ONE application user can manage MULTIPLE Kleinanzeigen accounts. Each account
++ * is an ISOLATED workspace (its own config.yaml login/session, browser profile
++ * at .temp/browser-profile, ads/ and downloaded-ads/) — reusing the exact
++ * isolation the app already had per app-user.
++ *
++ * The DEFAULT account maps to the app user's existing workspace root (no files
++ * are moved — full backward compatibility). Additional accounts live under
++ * <userWorkspace>/accounts/<accountId>/.
++ *
++ * The account registry is stored at <userWorkspace>/accounts.yaml.
++ */
++
++export type LoginStatus = 'connected' | 'disconnected' | 'no_credentials';
++
++export interface Account {
++  id: string;
++  display_name: string;
++  is_default: boolean;
++  created_at: string;
++  updated_at: string;
++  last_sync: string | null;
++  /** Default automatic-republish interval (days) applied to this account's ads. */
++  republish_default_days: number;
++}
++
++interface AccountsFile {
++  accounts: Account[];
++}
++
++function accountsFilePath(userWorkspace: string): string {
++  return path.join(userWorkspace, 'accounts.yaml');
++}
++
++/** Sub-workspace directory for an account (default account uses the user root). */
++export function accountWorkspace(userWorkspace: string, account: Account): string {
++  if (account.is_default) return userWorkspace;
++  return path.join(userWorkspace, 'accounts', account.id);
++}
++
++function nowIso(): string {
++  return new Date().toISOString();
++}
++
++/** Read the KA login username stored in a workspace's config.yaml (best effort). */
++function readLoginUsername(workspace: string): string {
++  try {
++    const cfg = readConfig(workspace);
++    const login = (cfg.login as Record<string, string>) ?? {};
++    const u = (login.username ?? '').trim();
++    return isEnvPlaceholder(u) ? '' : u;
++  } catch {
++    return '';
++  }
++}
++
++function readAccountsFile(userWorkspace: string): AccountsFile | null {
++  const fp = accountsFilePath(userWorkspace);
++  if (!fs.existsSync(fp)) return null;
++  try {
++    const data = yaml.load(fs.readFileSync(fp, 'utf-8')) as AccountsFile;
++    if (data && Array.isArray(data.accounts)) return data;
++  } catch { /* corrupt file — rebuild below */ }
++  return null;
++}
++
++export function saveAccounts(userWorkspace: string, accounts: Account[]): void {
++  const fp = accountsFilePath(userWorkspace);
++  fs.mkdirSync(path.dirname(fp), { recursive: true });
++  fs.writeFileSync(fp, yaml.dump({ accounts } satisfies AccountsFile, { sortKeys: false, noCompatMode: true }), 'utf-8');
++}
++
++/**
++ * Load the account registry for an app user. Bootstraps a DEFAULT account on
++ * first use, mapping the existing workspace root (backward compatibility — no
++ * files moved).
++ */
++export function loadAccounts(userWorkspace: string): Account[] {
++  const existing = readAccountsFile(userWorkspace);
++  if (existing && existing.accounts.length > 0) return existing.accounts;
++
++  // Bootstrap: derive a display name from the legacy config.yaml login if present.
++  const username = readLoginUsername(userWorkspace);
++  const now = nowIso();
++  const defaultAccount: Account = {
++    id: 'default',
++    display_name: username || 'Konto 1',
++    is_default: true,
++    created_at: now,
++    updated_at: now,
++    last_sync: null,
++    republish_default_days: 30,
++  };
++  saveAccounts(userWorkspace, [defaultAccount]);
++  return [defaultAccount];
++}
++
++export function getAccountById(userWorkspace: string, accountId: string | null | undefined): Account | null {
++  const accounts = loadAccounts(userWorkspace);
++  if (!accountId) return null;
++  return accounts.find((a) => a.id === accountId) ?? null;
++}
++
++/**
++ * Resolve the account to operate on. Falls back to the default account when the
++ * requested id is missing/unknown, so account/session routing always resolves
++ * to a concrete, isolated workspace.
++ */
++export function resolveAccount(
++  userWorkspace: string,
++  accountId: string | null | undefined,
++): { account: Account; workspace: string } {
++  const accounts = loadAccounts(userWorkspace);
++  const account =
++    (accountId ? accounts.find((a) => a.id === accountId) : null) ??
++    accounts.find((a) => a.is_default) ??
++    accounts[0];
++  return { account, workspace: accountWorkspace(userWorkspace, account) };
++}
++
++function newAccountId(displayName: string): string {
++  const slug = displayName
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, '_')
++    .replace(/^_+|_+$/g, '')
++    .slice(0, 24);
++  const suffix = crypto.randomBytes(3).toString('hex');
++  const base = slug ? `${slug}_${suffix}` : `konto_${suffix}`;
++  return base;
++}
++
++/** Create a new, empty, isolated Kleinanzeigen account (sub-workspace). */
++export function createAccount(userWorkspace: string, displayName: string): Account {
++  const accounts = loadAccounts(userWorkspace);
++  const name = displayName.trim() || `Konto ${accounts.length + 1}`;
++  let id = newAccountId(name);
++  while (accounts.some((a) => a.id === id) || id === 'default') {
++    id = newAccountId(name);
++  }
++  const now = nowIso();
++  const account: Account = {
++    id,
++    display_name: name,
++    is_default: false,
++    created_at: now,
++    updated_at: now,
++    last_sync: null,
++    republish_default_days: 30,
++  };
++
++  // Provision the isolated workspace (same layout the bot expects per workspace).
++  const ws = accountWorkspace(userWorkspace, account);
++  fs.mkdirSync(path.join(ws, 'ads'), { recursive: true });
++  fs.mkdirSync(path.join(ws, 'downloaded-ads'), { recursive: true });
++  // Seed a config.yaml with an (empty) login block so readMergedConfig treats
++  // this account's login as isolated and never inherits another account's creds.
++  if (!fs.existsSync(path.join(ws, 'config.yaml'))) {
++    writeConfig(ws, { login: { username: '', password: '' } });
++  }
++
++  saveAccounts(userWorkspace, [...accounts, account]);
++  return account;
++}
++
++export function updateAccount(
++  userWorkspace: string,
++  accountId: string,
++  updates: Partial<Pick<Account, 'display_name' | 'last_sync' | 'republish_default_days'>>,
++): Account | null {
++  const accounts = loadAccounts(userWorkspace);
++  const account = accounts.find((a) => a.id === accountId);
++  if (!account) return null;
++  if (updates.display_name !== undefined) account.display_name = updates.display_name.trim() || account.display_name;
++  if (updates.last_sync !== undefined) account.last_sync = updates.last_sync;
++  if (updates.republish_default_days !== undefined) account.republish_default_days = updates.republish_default_days;
++  account.updated_at = nowIso();
++  saveAccounts(userWorkspace, accounts);
++  return account;
++}
++
++/**
++ * Remove an account and its isolated workspace. The default account cannot be
++ * removed (it maps to the app user's root workspace / legacy data).
++ */
++export function removeAccount(userWorkspace: string, accountId: string): boolean {
++  const accounts = loadAccounts(userWorkspace);
++  const account = accounts.find((a) => a.id === accountId);
++  if (!account || account.is_default) return false;
++  const ws = accountWorkspace(userWorkspace, account);
++  try {
++    fs.rmSync(ws, { recursive: true, force: true });
++  } catch { /* best effort */ }
++  saveAccounts(userWorkspace, accounts.filter((a) => a.id !== accountId));
++  return true;
++}
++
++/** Whether an account has usable KA credentials configured. */
++export function hasCredentials(workspace: string): boolean {
++  try {
++    const cfg = readConfig(workspace);
++    const login = (cfg.login as Record<string, string>) ?? {};
++    const u = (login.username ?? '').trim();
++    const p = (login.password ?? '').trim();
++    return Boolean(u && p);
++  } catch {
++    return false;
++  }
++}
++
++/** Whether a persisted KA session (cookies) exists for this account. */
++export function hasSession(workspace: string): boolean {
++  return fs.existsSync(path.join(workspace, SESSION_FILE));
++}
++
++export function computeLoginStatus(workspace: string): LoginStatus {
++  if (hasSession(workspace)) return 'connected';
++  if (hasCredentials(workspace)) return 'disconnected';
++  return 'no_credentials';
++}
++
++/**
++ * Set (or clear) an account's Kleinanzeigen login credentials directly in its
++ * isolated config.yaml. Unlike /api/system/config this NEVER syncs to the app
++ * login (users.yaml) — each KA account is independent from the app account.
++ */
++export function setAccountCredentials(workspace: string, username: string, password: string): void {
++  const cfg = readConfig(workspace);
++  const existingLogin = (cfg.login as Record<string, string>) ?? {};
++  cfg.login = {
++    ...existingLogin,
++    username: username.trim(),
++    // Empty password keeps the existing one (so a rename/edit doesn't wipe it).
++    password: password ? password : existingLogin.password ?? '',
++  };
++  writeConfig(workspace, cfg);
++}
++
++/** Clear an account's live session (cookies + browser profile), keeping credentials. */
++export function clearAccountSession(workspace: string): void {
++  try { fs.rmSync(path.join(workspace, SESSION_FILE), { force: true }); } catch { /* ignore */ }
++  try { fs.rmSync(path.join(workspace, '.temp', 'browser-profile'), { recursive: true, force: true }); } catch { /* ignore */ }
++}
+diff --git a/src/lib/api/client.ts b/src/lib/api/client.ts
+index 9b46848..1c9fc47 100644
+--- a/src/lib/api/client.ts
++++ b/src/lib/api/client.ts
+@@ -102,6 +102,15 @@ async function request<T>(url: string, options: FetchOptions = {}, isRetry = fal
+     fetchHeaders['Authorization'] = `Bearer ${token}`;
+   }
+ 
++  // Multi-account routing: tag every authenticated request with the active
++  // Kleinanzeigen account so the backend scopes it to that account's isolated
++  // session/workspace. Aggregate endpoints (/api/accounts/*, /api/inbox) ignore
++  // it or accept an explicit override header set by the caller.
++  if (typeof window !== 'undefined' && !isPublic && !fetchHeaders['x-account-id']) {
++    const activeAccountId = localStorage.getItem('active_account_id');
++    if (activeAccountId) fetchHeaders['x-account-id'] = activeAccountId;
++  }
++
+   if (body && !(body instanceof FormData)) {
+     fetchHeaders['Content-Type'] = 'application/json';
+   }
+diff --git a/src/lib/auth/middleware.ts b/src/lib/auth/middleware.ts
+index d90dd1b..922278d 100644
+--- a/src/lib/auth/middleware.ts
++++ b/src/lib/auth/middleware.ts
+@@ -2,13 +2,24 @@ import { type NextRequest } from 'next/server';
+ import { ApiError } from '@/lib/security/validation';
+ import { decodeJwt } from '@/lib/auth/jwt';
+ import { loadUsers, ensureJwtSecret, getUserWorkspace } from '@/lib/yaml/users';
++import { resolveAccount } from '@/lib/accounts/accounts';
+ 
+ export interface AuthUser {
+   id: string;
+   email: string;
+   role: string;
+   display_name: string;
++  /**
++   * Account-scoped workspace: the isolated workspace of the CURRENTLY selected
++   * Kleinanzeigen account (from the `x-account-id` request header). Every KA
++   * operation (login/publish/messages/jobs) runs against this workspace, so it
++   * can never accidentally use another account's session.
++   */
+   workspace: string;
++  /** The app user's root workspace (shared, account-independent — e.g. templates). */
++  userWorkspace: string;
++  /** The resolved Kleinanzeigen account id for this request. */
++  accountId: string;
+ }
+ 
+ /**
+@@ -48,12 +59,20 @@ export async function getCurrentUser(request: NextRequest): Promise<AuthUser> {
+     throw new ApiError(401, 'Token invalidated');
+   }
+ 
++  const userWorkspace = getUserWorkspace(userId);
++  // Resolve the selected Kleinanzeigen account (x-account-id header) to its
++  // isolated workspace. Falls back to the default account when absent/unknown.
++  const requestedAccountId = request.headers.get('x-account-id');
++  const { account, workspace } = resolveAccount(userWorkspace, requestedAccountId);
++
+   return {
+     id: user.id,
+     email: user.email,
+     role: user.role,
+     display_name: user.display_name ?? '',
+-    workspace: getUserWorkspace(userId),
++    workspace,
++    userWorkspace,
++    accountId: account.id,
+   };
+ }
+ 
