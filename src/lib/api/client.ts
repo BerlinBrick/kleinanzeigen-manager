@@ -102,6 +102,15 @@ async function request<T>(url: string, options: FetchOptions = {}, isRetry = fal
     fetchHeaders['Authorization'] = `Bearer ${token}`;
   }
 
+  // Multi-account routing: tag every authenticated request with the active
+  // Kleinanzeigen account so the backend scopes it to that account's isolated
+  // session/workspace. Aggregate endpoints (/api/accounts/*, /api/inbox) ignore
+  // it or accept an explicit override header set by the caller.
+  if (typeof window !== 'undefined' && !isPublic && !fetchHeaders['x-account-id']) {
+    const activeAccountId = localStorage.getItem('active_account_id');
+    if (activeAccountId) fetchHeaders['x-account-id'] = activeAccountId;
+  }
+
   if (body && !(body instanceof FormData)) {
     fetchHeaders['Content-Type'] = 'application/json';
   }

@@ -2,13 +2,24 @@ import { type NextRequest } from 'next/server';
 import { ApiError } from '@/lib/security/validation';
 import { decodeJwt } from '@/lib/auth/jwt';
 import { loadUsers, ensureJwtSecret, getUserWorkspace } from '@/lib/yaml/users';
+import { resolveAccount } from '@/lib/accounts/accounts';
 
 export interface AuthUser {
   id: string;
   email: string;
   role: string;
   display_name: string;
+  /**
+   * Account-scoped workspace: the isolated workspace of the CURRENTLY selected
+   * Kleinanzeigen account (from the `x-account-id` request header). Every KA
+   * operation (login/publish/messages/jobs) runs against this workspace, so it
+   * can never accidentally use another account's session.
+   */
   workspace: string;
+  /** The app user's root workspace (shared, account-independent — e.g. templates). */
+  userWorkspace: string;
+  /** The resolved Kleinanzeigen account id for this request. */
+  accountId: string;
 }
 
 /**
@@ -48,12 +59,20 @@ export async function getCurrentUser(request: NextRequest): Promise<AuthUser> {
     throw new ApiError(401, 'Token invalidated');
   }
 
+  const userWorkspace = getUserWorkspace(userId);
+  // Resolve the selected Kleinanzeigen account (x-account-id header) to its
+  // isolated workspace. Falls back to the default account when absent/unknown.
+  const requestedAccountId = request.headers.get('x-account-id');
+  const { account, workspace } = resolveAccount(userWorkspace, requestedAccountId);
+
   return {
     id: user.id,
     email: user.email,
     role: user.role,
     display_name: user.display_name ?? '',
-    workspace: getUserWorkspace(userId),
+    workspace,
+    userWorkspace,
+    accountId: account.id,
   };
 }
 

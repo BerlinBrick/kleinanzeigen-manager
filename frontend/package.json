@@ -1,0 +1,8 @@
+{
+  "name": "kb-frontend-shim",
+  "private": true,
+  "description": "Supervisor shim: launches the Next.js app located in /app on port 3000",
+  "scripts": {
+    "start": "cd /app && BOT_DIR=/app NODE_ENV=development /app/node_modules/.bin/next dev -p 3000 -H 0.0.0.0"
+  }
+}

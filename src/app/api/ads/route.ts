@@ -233,7 +233,7 @@ export async function POST(request: NextRequest) {
     // Copy images from template dir to new ad dir
     if (templateSlug && (data.images as string[])?.length > 0) {
       const { existsSync, copyFileSync } = await import('fs');
-      const tplImagesDir = path.join(getTemplatesDir(ws), `tpl_${templateSlug}`);
+      const tplImagesDir = path.join(getTemplatesDir(user.userWorkspace), `tpl_${templateSlug}`);
       if (existsSync(tplImagesDir)) {
         for (const imgName of data.images as string[]) {
           const src = path.join(tplImagesDir, imgName);

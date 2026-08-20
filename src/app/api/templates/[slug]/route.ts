@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     }
 
     const { slug } = await context.params;
-    const templatesDir = getTemplatesDir(user.workspace);
+    const templatesDir = getTemplatesDir(user.userWorkspace);
     const filePath = findTemplateFile(templatesDir, slug);
 
     if (!filePath) {
@@ -53,7 +53,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     }
 
     const { slug } = await context.params;
-    const templatesDir = getTemplatesDir(user.workspace);
+    const templatesDir = getTemplatesDir(user.userWorkspace);
     const filePath = findTemplateFile(templatesDir, slug);
 
     if (!filePath) {
@@ -105,7 +105,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
     }
 
     const { slug } = await context.params;
-    const templatesDir = getTemplatesDir(user.workspace);
+    const templatesDir = getTemplatesDir(user.userWorkspace);
     const filePath = findTemplateFile(templatesDir, slug);
 
     if (!filePath) {

@@ -10,7 +10,9 @@ import { PriceChart } from '@/components/dashboard/PriceChart';
 import { CategoryBars } from '@/components/dashboard/CategoryBars';
 import { DistributionCharts } from '@/components/dashboard/DistributionCharts';
 import { StatsSection } from '@/components/dashboard/StatsSection';
+import { MultiAccountOverview } from '@/components/dashboard/MultiAccountOverview';
 import { PageLoader } from '@/components/ui';
+import { useAccount } from '@/contexts/AccountContext';
 import { api } from '@/lib/api/client';
 import type { AdStatsEntry } from '@/types/stats';
 import styles from './page.module.scss';
@@ -21,6 +23,7 @@ interface StatsResponse {
 }
 
 export default function DashboardPage() {
+  const { activeAccount } = useAccount();
   const { data: adsData, isLoading: adsLoading } = useAds();
   const ads = useMemo(() => adsData?.ads ?? [], [adsData]);
 
@@ -46,6 +49,10 @@ export default function DashboardPage() {
 
   return (
     <div className={`${styles.dashboard} animStagger`}>
+      <MultiAccountOverview />
+      <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-bold)', color: 'var(--text-primary)' }} data-testid="dashboard-active-account-heading">
+        Details: {activeAccount?.display_name ?? 'Aktives Konto'}
+      </h2>
       <StatsGrid ads={ads} />
       <HealthIndicators ads={ads} />
       <ScheduleCalendar ads={ads} />

@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { ProfileMenu } from './ProfileMenu';
+import { AccountSwitcher } from './AccountSwitcher';
 import { CreateAdModal } from '@/components/ads/CreateAdModal';
 import { Badge } from '@/components/ui/Badge/Badge';
 import { useUnreadCount, useResponderStatus } from '@/hooks/useMessages';
@@ -14,6 +15,8 @@ import styles from './Header.module.scss';
 
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
+  '/accounts': 'Konten',
+  '/inbox': 'Postfach',
   '/ads': 'Anzeigen',
   '/ads/new': 'Neue Anzeige',
   '/ads/edit': 'Anzeige bearbeiten',
@@ -113,6 +116,7 @@ export function Header() {
           </Link>
         )}
         <h1 className={styles.headerTitle}>{title}</h1>
+        <AccountSwitcher />
       </div>
 
       {/* Mobile hamburger */}
@@ -170,6 +174,38 @@ export function Header() {
 
         {/* Messages link with unread badge */}
         <MessagesLink onClose={() => setMobileOpen(false)} />
+
+        {/* Central inbox (all accounts) */}
+        <Link
+          href="/inbox"
+          className={styles.headerDropdownBtn}
+          onClick={() => setMobileOpen(false)}
+        >
+          <span className={styles.headerDropdownBtnIcon}>
+            <svg viewBox="0 0 24 24">
+              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+              <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+            </svg>
+          </span>
+          <span className={styles.navLabel}>Postfach</span>
+        </Link>
+
+        {/* Accounts management */}
+        <Link
+          href="/accounts"
+          className={styles.headerDropdownBtn}
+          onClick={() => setMobileOpen(false)}
+        >
+          <span className={styles.headerDropdownBtnIcon}>
+            <svg viewBox="0 0 24 24">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+          </span>
+          <span className={styles.navLabel}>Konten</span>
+        </Link>
 
         {/* Dashboard link */}
         <Link

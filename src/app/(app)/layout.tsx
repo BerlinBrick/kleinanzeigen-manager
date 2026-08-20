@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { AppShell } from '@/components/layout/AppShell';
 import { Spinner } from '@/components/ui';
 import { MfaOverlay } from '@/components/bot/MfaOverlay';
+import { AccountProvider } from '@/contexts/AccountContext';
 
 /**
  * App layout: wraps authenticated pages with AppShell (header-only, no sidebar).
@@ -44,9 +45,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AppShell>
-      {children}
-      <MfaOverlay />
-    </AppShell>
+    <AccountProvider>
+      <AppShell>
+        {children}
+        <MfaOverlay />
+      </AppShell>
+    </AccountProvider>
   );
 }

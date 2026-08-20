@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     }
 
     const templates = [];
-    for (const filePath of findTemplateFiles(user.workspace)) {
+    for (const filePath of findTemplateFiles(user.userWorkspace)) {
       const data = readAd(filePath);
       const slug = path.basename(filePath, '.yaml').replace(/^tpl_/, '');
       templates.push({
@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
         description: data._template_description ?? '',
         locked_fields: data._locked_fields ?? [],
         category: data.category ?? '',
-        file: toNFC(path.relative(user.workspace, filePath)),
+        file: toNFC(path.relative(user.userWorkspace, filePath)),
       });
     }
 
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ detail: 'Invalid template name' }, { status: 400 });
     }
 
-    const templatesDir = getTemplatesDir(user.workspace);
+    const templatesDir = getTemplatesDir(user.userWorkspace);
     fs.mkdirSync(templatesDir, { recursive: true });
 
     // Dir-based template: ads/templates/tpl_{slug}/tpl_{slug}.yaml
@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       message: 'Template created',
       slug,
-      file: toNFC(path.relative(user.workspace, filePath)),
+      file: toNFC(path.relative(user.userWorkspace, filePath)),
     });
   } catch (error) {
     return handleApiError(error);

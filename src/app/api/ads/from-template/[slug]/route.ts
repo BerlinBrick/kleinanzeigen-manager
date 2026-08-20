@@ -19,7 +19,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     const { slug } = await context.params;
-    const templatesDir = getTemplatesDir(user.workspace);
+    const templatesDir = getTemplatesDir(user.userWorkspace);
     const filePath = findTemplateFile(templatesDir, slug);
 
     if (!filePath) {
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const tplDir = path.join(templatesDir, `tpl_${slug}`);
     const isDirBased = filePath === path.join(tplDir, `tpl_${slug}.yaml`);
     const sourceAdFile = isDirBased
-      ? toNFC(path.relative(user.workspace, filePath))
+      ? toNFC(path.relative(user.userWorkspace, filePath))
       : ((data._source_ad_file as string) ?? null);
 
     // Translate legacy API values → display text (templates saved before normalization)
