@@ -84,8 +84,7 @@ export async function isVncLoggedIn(workspace: string): Promise<boolean> {
   if (!session || session.status !== 'ready') return false;
   try {
     const targets = await cdpHttpGet<Array<{ type: string; url: string }>>(session.cdpPort, '/json');
-    const page = targets.find(t => t.type === 'page');
-    return page ? isLoggedInUrl(page.url) : false;
+    return targets.some(t => t.type === 'page' && isLoggedInUrl(t.url));
   } catch {
     return false;
   }

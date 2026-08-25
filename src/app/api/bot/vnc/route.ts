@@ -2,12 +2,35 @@ import { handleApiError } from '@/lib/api/error-handler';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/middleware';
 import { startVncLogin, stopVncLogin, getVncSession, isVncLoggedIn, touchVncWindow, isVncWindowIdle } from '@/lib/vnc/lifecycle';
-import { insertTextIntoBrowser } from '@/lib/browser/cdp';
+import { insertTextIntoBrowser, extractCookiesFromCDP } from '@/lib/browser/cdp';
 import { isWorkspaceJobRunning, isWorkspaceLoginRequired } from '@/lib/bot/jobs';
 import { readMergedConfig } from '@/lib/yaml/config';
 import { resolveBrowserMode, isVncAttachMode } from '@/lib/bot/browser-mode';
+import { SESSION_FILE } from '@/lib/ka/management-api';
+import fs from 'fs';
+import path from 'path';
 
 const MAX_PASTE_LENGTH = 4096;
+
+async function saveLoginSession(workspace: string, cdpPort: number): Promise<void> {
+  try {
+    const cookies = await extractCookiesFromCDP(cdpPort);
+    if (!cookies) return;
+
+    const file = path.join(workspace, SESSION_FILE);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        cookies,
+        savedAt: new Date().toISOString()
+      }),
+      { mode: 0o600 }
+    );
+  } catch (error) {
+    console.error('[vnc] session save failed', error);
+  }
+}
 // Auto-stop a session whose login window has been closed this long with no attached job.
 const VNC_IDLE_MS = 10 * 60 * 1000;
 
@@ -61,6 +84,11 @@ export async function GET(request: NextRequest) {
     const session = getVncSession(user.workspace);
     if (session) {
       const loggedIn = await isVncLoggedIn(user.workspace);
+
+      if (loggedIn) {
+        await saveLoginSession(user.workspace, session.cdpPort);
+      }
+
       return NextResponse.json({ status: session.status, token: session.token, loggedIn, jobRunning, mode, attachMode, loginRequired });
     }
     return NextResponse.json({ status: 'none', loggedIn: false, jobRunning, mode, attachMode, loginRequired });
