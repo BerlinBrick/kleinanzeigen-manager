@@ -6,9 +6,7 @@ import { insertTextIntoBrowser, extractCookiesFromCDP } from '@/lib/browser/cdp'
 import { isWorkspaceJobRunning, isWorkspaceLoginRequired } from '@/lib/bot/jobs';
 import { readMergedConfig } from '@/lib/yaml/config';
 import { resolveBrowserMode, isVncAttachMode } from '@/lib/bot/browser-mode';
-import { SESSION_FILE } from '@/lib/ka/management-api';
-import fs from 'fs';
-import path from 'path';
+import { saveSessionCookies } from '@/lib/ka/management-api';
 
 const MAX_PASTE_LENGTH = 4096;
 
@@ -17,16 +15,7 @@ async function saveLoginSession(workspace: string, cdpPort: number): Promise<voi
     const cookies = await extractCookiesFromCDP(cdpPort);
     if (!cookies) return;
 
-    const file = path.join(workspace, SESSION_FILE);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(
-      file,
-      JSON.stringify({
-        cookies,
-        savedAt: new Date().toISOString()
-      }),
-      { mode: 0o600 }
-    );
+    saveSessionCookies(workspace, cookies);
   } catch (error) {
     console.error('[vnc] session save failed', error);
   }

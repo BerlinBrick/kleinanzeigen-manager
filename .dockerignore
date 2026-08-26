@@ -11,3 +11,13 @@ config.yaml
 **/*.spec.ts
 playwright-report/
 test-results/
+
+# Direct Dockerfile.runtime builds need the prebuilt standalone artifacts.
+!.next/
+!.next/standalone/
+!.next/standalone/**
+!.next/static/
+!.next/static/**
+!node_modules/
+!node_modules/ws/
+!node_modules/ws/**

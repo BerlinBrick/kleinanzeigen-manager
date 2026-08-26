@@ -217,7 +217,7 @@ export default function AccountsPage() {
           autoFocus
         />
         <p className={styles.modalHint}>
-          Zugangsdaten kannst du direkt nach dem Anlegen unter „Bearbeiten" hinterlegen.
+          Zugangsdaten kannst du direkt nach dem Anlegen unter „Bearbeiten&quot; hinterlegen.
         </p>
       </Modal>
 

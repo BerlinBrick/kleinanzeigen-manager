@@ -79,7 +79,7 @@ export default function InboxPage() {
       {data?.errors && data.errors.length > 0 && (
         <div className={styles.errorBanner} data-testid="inbox-errors">
           {data.errors.map((e) => (
-            <span key={e.account_id}>„{e.account_name}": {e.error}</span>
+            <span key={e.account_id}>„{e.account_name}&quot;: {e.error}</span>
           ))}
         </div>
       )}

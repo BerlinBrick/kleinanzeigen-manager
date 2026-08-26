@@ -34,7 +34,7 @@ cat > "$OUT_DIR/README.txt" << 'README'
 1. Start (builds the image automatically):
      docker compose up --build -d
 
-2. Open http://<your-ip>:3737/setup
+2. Open http://<your-ip>:3000/setup
 
 3. Complete the Setup Wizard:
      - Kleinanzeigen email + password

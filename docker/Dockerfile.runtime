@@ -3,13 +3,23 @@ FROM debian:trixie-slim
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates chromium curl fonts-liberation fonts-noto-color-emoji gosu matchbox-window-manager nginx-light procps python3-websockify tigervnc-standalone-server && rm -rf /var/lib/apt/lists/*
 RUN curl -fSL https://github.com/novnc/noVNC/archive/refs/tags/v1.6.0.tar.gz -o /tmp/n.tgz && mkdir -p /usr/share/novnc && tar xzf /tmp/n.tgz -C /usr/share/novnc --strip-components=1 && rm /tmp/n.tgz
+ARG TARGETARCH
+ARG BOT_RELEASE=latest
+RUN mkdir -p /opt/bot-default \
+	&& curl -fSL "https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/${BOT_RELEASE}/kleinanzeigen-bot-linux-${TARGETARCH}" -o /opt/bot-default/kleinanzeigen-bot \
+	&& chmod +x /opt/bot-default/kleinanzeigen-bot
+ARG PUID=1000
+ARG PGID=1000
+RUN groupadd -g ${PGID} botuser && useradd -u ${PUID} -g botuser -m -s /bin/bash botuser
 WORKDIR /app
 COPY .next/standalone ./
 COPY .next/static ./.next/static
 COPY public ./public
+COPY node_modules/ws ./node_modules/ws
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 RUN chmod +x /entrypoint.sh
+RUN chown -R botuser:botuser /app
 ENV NODE_ENV=production PORT=3001 BOT_DIR=/workspace BOT_CMD=/workspace/bot/kleinanzeigen-bot
 EXPOSE 3000
 ENTRYPOINT ["/entrypoint.sh"]

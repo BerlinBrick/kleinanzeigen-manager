@@ -349,6 +349,18 @@ export async function startVncLogin(workspace: string): Promise<VncSession> {
       writeVncToken(token, rfbPort);
 
       sessions.set(workspace, { session, xvnc, wm, chromium, lastWindowSeenAt: Date.now() });
+      const handleUnexpectedExit = (name: string, proc: ChildProcess): void => {
+        const current = sessions.get(workspace);
+        if (!current || current.session !== session) return;
+        if ((name === 'xvnc' && current.xvnc !== proc)
+          || (name === 'wm' && current.wm !== proc)
+          || (name === 'chromium' && current.chromium !== proc)) return;
+        console.error(`[vnc] ${name} wurde unerwartet beendet`);
+        void stopVncLogin(workspace);
+      };
+      xvnc.once('exit', () => handleUnexpectedExit('xvnc', xvnc!));
+      wm.once('exit', () => handleUnexpectedExit('wm', wm!));
+      chromium.once('exit', () => handleUnexpectedExit('chromium', chromium!));
 
       // Generous window for a COLD Chromium boot inside Xvnc on slow/loaded hosts.
       // spawnError still bails out within ~500ms if a binary failed to spawn rather than

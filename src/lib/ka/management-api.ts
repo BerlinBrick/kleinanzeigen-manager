@@ -25,6 +25,13 @@ export interface KaManageAd {
   adLifeTimeInSeconds?: number;
 }
 
+export class KaManageApiError extends Error {
+  constructor(public readonly status: number, message: string, public readonly location?: string) {
+    super(message);
+    this.name = 'KaManageApiError';
+  }
+}
+
 interface KaPaging {
   pageNum: number;
   pageSize: number;
@@ -41,47 +48,78 @@ export function loadSessionCookies(workspace: string): string | null {
   try {
     const data = JSON.parse(
       fs.readFileSync(path.join(workspace, SESSION_FILE), 'utf-8'),
-    ) as { cookies: string };
-    return data.cookies || null;
+    ) as { cookies?: unknown };
+    return typeof data.cookies === 'string' && data.cookies ? data.cookies : null;
   } catch {
     return null;
   }
 }
 
+export function saveSessionCookies(workspace: string, cookies: string): void {
+  const file = path.join(workspace, SESSION_FILE);
+  let userId: number | undefined;
+  try {
+    const previous = JSON.parse(fs.readFileSync(file, 'utf-8')) as { userId?: unknown };
+    if (typeof previous.userId === 'number') userId = previous.userId;
+  } catch {
+    // The session may not exist yet.
+  }
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ cookies, ...(userId === undefined ? {} : { userId }), savedAt: Date.now() }),
+    { mode: 0o600 },
+  );
+}
+
 async function fetchPage(cookies: string, page: number): Promise<KaManageResponse> {
-  const res = await fetch(`${KA_MANAGE_URL}?sort=DEFAULT&pageNum=${page}`, {
-    headers: {
-      Cookie: cookies,
-      Accept: 'application/json',
-      'X-Requested-With': 'XMLHttpRequest',
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-    },
-  });
-  if (!res.ok) return {};
-  return res.json() as Promise<KaManageResponse>;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const res = await fetch(`${KA_MANAGE_URL}?sort=DEFAULT&pageNum=${page}`, {
+      headers: {
+        Cookie: cookies,
+        Accept: 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+      },
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const location = res.headers.get('location') ?? undefined;
+      throw new KaManageApiError(
+        res.status,
+        `Kleinanzeigen API HTTP ${res.status}${location ? ` -> ${location}` : ''}`,
+        location,
+      );
+    }
+    const data = await res.json() as unknown;
+    if (!data || typeof data !== 'object') throw new KaManageApiError(502, 'Ungültige Antwort der Kleinanzeigen API');
+    return data as KaManageResponse;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function fetchKaAds(workspace: string): Promise<KaManageAd[]> {
   const cookies = loadSessionCookies(workspace);
   if (!cookies) return [];
 
-  try {
-    const first = await fetchPage(cookies, 1);
-    const firstAds = first.ads ?? [];
-    if (firstAds.length === 0) return [];
+  const first = await fetchPage(cookies, 1);
+  const firstAds = first.ads ?? [];
+  if (firstAds.length === 0) return [];
 
-    const totalPages = first.paging?.last ?? 1;
-    if (totalPages === 1) return firstAds;
+  const totalPages = first.paging?.last ?? 1;
+  if (totalPages === 1) return firstAds;
 
-    const remaining = await Promise.all(
-      Array.from({ length: totalPages - 1 }, (_, i) => fetchPage(cookies, i + 2)),
-    );
+  const remaining = await Promise.all(
+    Array.from({ length: totalPages - 1 }, (_, i) => fetchPage(cookies, i + 2)),
+  );
 
-    return [
-      ...firstAds,
-      ...remaining.flatMap(r => r.ads ?? []),
-    ];
-  } catch {
-    return [];
-  }
+  return [
+    ...firstAds,
+    ...remaining.flatMap(r => r.ads ?? []),
+  ];
 }
