@@ -109,6 +109,13 @@ accounts.yaml
 .temp/
 downloaded-ads/
 ads/
+docker/.ad-stats.json
+docker/.last_download_all.json
+docker/kleinanzeigen-bot.log
+docker/bot/kleinanzeigen-bot
+docker/extensions.yaml
+docker/schedules.yaml
+docker/users.yaml
 !src/app/api/ads/
 !src/app/api/ads/online/
 !src/app/api/ads/online/route.ts
