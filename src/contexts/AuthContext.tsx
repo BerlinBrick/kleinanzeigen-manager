@@ -149,6 +149,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } catch {
           clearSessionRef.current(false);
         }
+      } else {
+        // The httpOnly refresh cookie is the durable session source. Rehydrate
+        // client state when localStorage was cleared or unavailable.
+        const newToken = await tryRefreshToken();
+        if (newToken) {
+          const res = await fetch('/api/auth/me', {
+            headers: { Authorization: `Bearer ${newToken}` },
+            signal: AbortSignal.timeout(10000),
+          });
+          if (res.ok) {
+            const serverUser: User = await res.json();
+            localStorage.setItem('user', JSON.stringify(serverUser));
+            setToken(newToken);
+            setUser(serverUser);
+          }
+        }
       }
 
       setIsLoading(false);

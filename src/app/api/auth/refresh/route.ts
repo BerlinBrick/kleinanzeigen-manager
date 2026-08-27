@@ -2,7 +2,7 @@ import { handleApiError } from '@/lib/api/error-handler';
 import { NextRequest, NextResponse } from 'next/server';
 import { loadUsers, ensureJwtSecret } from '@/lib/yaml/users';
 import { createJwt, verifyRefreshToken } from '@/lib/auth/jwt';
-import { REFRESH_COOKIE, ACCESS_COOKIE, ACCESS_COOKIE_OPTIONS } from '@/lib/auth/cookies';
+import { REFRESH_COOKIE, ACCESS_COOKIE, ACCESS_COOKIE_OPTIONS, isSecureRequest } from '@/lib/auth/cookies';
 
 export async function POST(request: NextRequest) {
   try {
@@ -30,7 +30,10 @@ export async function POST(request: NextRequest) {
 
     const newToken = createJwt(user, secret);
     const response = NextResponse.json({ token: newToken });
-    response.cookies.set(ACCESS_COOKIE, newToken, ACCESS_COOKIE_OPTIONS);
+    response.cookies.set(ACCESS_COOKIE, newToken, {
+      ...ACCESS_COOKIE_OPTIONS,
+      secure: isSecureRequest(request),
+    });
     return response;
   } catch (error) {
     return handleApiError(error);

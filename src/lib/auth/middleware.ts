@@ -3,6 +3,7 @@ import { ApiError } from '@/lib/security/validation';
 import { decodeJwt } from '@/lib/auth/jwt';
 import { loadUsers, ensureJwtSecret, getUserWorkspace } from '@/lib/yaml/users';
 import { resolveAccount } from '@/lib/accounts/accounts';
+import { ACCESS_COOKIE } from '@/lib/auth/cookies';
 
 export interface AuthUser {
   id: string;
@@ -37,6 +38,7 @@ export async function getCurrentUser(request: NextRequest): Promise<AuthUser> {
   if (authHeader?.startsWith('Bearer ')) {
     token = authHeader.slice(7);
   }
+  token ??= request.cookies.get(ACCESS_COOKIE)?.value ?? null;
 
   if (!token) {
     throw new ApiError(

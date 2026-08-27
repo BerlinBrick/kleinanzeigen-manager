@@ -1,9 +1,10 @@
-import { NextResponse } from 'next/server';
-import { REFRESH_COOKIE, REFRESH_COOKIE_OPTIONS, ACCESS_COOKIE, ACCESS_COOKIE_OPTIONS } from '@/lib/auth/cookies';
+import { NextRequest, NextResponse } from 'next/server';
+import { REFRESH_COOKIE, REFRESH_COOKIE_OPTIONS, ACCESS_COOKIE, ACCESS_COOKIE_OPTIONS, isSecureRequest } from '@/lib/auth/cookies';
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(REFRESH_COOKIE, '', { ...REFRESH_COOKIE_OPTIONS, maxAge: 0 });
-  response.cookies.set(ACCESS_COOKIE, '', { ...ACCESS_COOKIE_OPTIONS, maxAge: 0 });
+  const secure = isSecureRequest(request);
+  response.cookies.set(REFRESH_COOKIE, '', { ...REFRESH_COOKIE_OPTIONS, secure, maxAge: 0 });
+  response.cookies.set(ACCESS_COOKIE, '', { ...ACCESS_COOKIE_OPTIONS, secure, maxAge: 0 });
   return response;
 }

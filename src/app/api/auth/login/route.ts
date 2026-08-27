@@ -4,7 +4,7 @@ import { loginSchema } from '@/validation/schemas';
 import { loadUsers, ensureJwtSecret } from '@/lib/yaml/users';
 import { verifyPassword } from '@/lib/auth/password';
 import { createJwt, createRefreshToken } from '@/lib/auth/jwt';
-import { REFRESH_COOKIE, REFRESH_COOKIE_OPTIONS, REFRESH_MAX_AGE_SECONDS, ACCESS_COOKIE, ACCESS_COOKIE_OPTIONS } from '@/lib/auth/cookies';
+import { REFRESH_COOKIE, REFRESH_COOKIE_OPTIONS, REFRESH_MAX_AGE_SECONDS, ACCESS_COOKIE, ACCESS_COOKIE_OPTIONS, isSecureRequest } from '@/lib/auth/cookies';
 import { loginLimiter } from '@/lib/auth/rate-limiter';
 
 export async function POST(request: NextRequest) {
@@ -55,9 +55,13 @@ export async function POST(request: NextRequest) {
 
     response.cookies.set(REFRESH_COOKIE, refreshToken, {
       ...REFRESH_COOKIE_OPTIONS,
+      secure: isSecureRequest(request),
       ...(rememberMe ? { maxAge: REFRESH_MAX_AGE_SECONDS } : {}),
     });
-    response.cookies.set(ACCESS_COOKIE, token, ACCESS_COOKIE_OPTIONS);
+    response.cookies.set(ACCESS_COOKIE, token, {
+      ...ACCESS_COOKIE_OPTIONS,
+      secure: isSecureRequest(request),
+    });
 
     return response;
   } catch (error) {

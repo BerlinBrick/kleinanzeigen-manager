@@ -6,7 +6,16 @@
  *   - Public/HTTPS:              COOKIE_SECURE=true             → secure: true
  */
 
+import type { NextRequest } from 'next/server';
+
 const IS_SECURE = process.env.COOKIE_SECURE === 'true';
+
+/** Use Secure cookies automatically behind HTTPS proxies such as Codespaces. */
+export function isSecureRequest(request: NextRequest): boolean {
+  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const host = request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? '';
+  return IS_SECURE || forwardedProto === 'https' || host.endsWith('.app.github.dev');
+}
 
 // Long-lived refresh token — httpOnly, only sent to the refresh endpoint
 export const REFRESH_COOKIE = 'kb_refresh_token';
