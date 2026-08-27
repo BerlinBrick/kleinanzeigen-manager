@@ -141,7 +141,10 @@ async function request<T>(url: string, options: FetchOptions = {}, isRetry = fal
       throw new ApiError(res.status, detail);
     }
 
-    if (res.status === 401 && !isPublic) {
+    // A retry uses a freshly issued access token. If that request still returns
+    // 401, it is an endpoint-specific authentication state (for example a
+    // disconnected Kleinanzeigen account), not an expired app session.
+    if (res.status === 401 && !isPublic && !isRetry) {
       forceLogout();
     }
 
