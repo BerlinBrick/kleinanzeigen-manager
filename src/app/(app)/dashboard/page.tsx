@@ -49,7 +49,7 @@ export default function DashboardPage() {
 
   return (
     <div className={`${styles.dashboard} animStagger`}>
-      <MultiAccountOverview />
+      <MultiAccountOverview onlineAds={ads} />
       <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-bold)', color: 'var(--text-primary)' }} data-testid="dashboard-active-account-heading">
         Details: {activeAccount?.display_name ?? 'Aktives Konto'}
       </h2>

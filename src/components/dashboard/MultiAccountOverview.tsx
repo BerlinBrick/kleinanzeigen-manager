@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { Card, Badge, Spinner } from '@/components/ui';
 import { useAccount } from '@/contexts/AccountContext';
 import { useAccountsOverview } from '@/hooks/useAccounts';
+import type { AdListItem } from '@/types/ad';
 import styles from './MultiAccountOverview.module.scss';
 
 const STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'muted' }> = {
@@ -13,7 +14,7 @@ const STATUS: Record<string, { label: string; variant: 'success' | 'warning' | '
 };
 
 /** Cross-account dashboard: totals + a compact per-account overview. */
-export function MultiAccountOverview() {
+export function MultiAccountOverview({ onlineAds }: { onlineAds: AdListItem[] }) {
   const { data, isLoading } = useAccountsOverview();
   const { setActiveAccount, activeAccountId } = useAccount();
   const router = useRouter();
@@ -25,10 +26,25 @@ export function MultiAccountOverview() {
   }
 
   const { totals, accounts, recent_ads } = data;
+  const activeAccount = accounts.find((account) => account.id === activeAccountId);
+  const displayedRecentAds = [
+    ...onlineAds.map((ad) => ({
+      account_id: activeAccountId,
+      account_name: activeAccount?.display_name ?? '',
+      id: ad.id ?? null,
+      title: ad.title,
+    })),
+    ...recent_ads.filter((ad) => ad.account_id !== activeAccountId),
+  ];
 
   const tiles = [
     { label: 'Konten verbunden', value: `${totals.connected}/${totals.accounts}` },
-    { label: 'Aktive Anzeigen', value: totals.active_ads },
+    {
+      label: 'Aktive Anzeigen',
+      value: totals.active_ads
+        - (activeAccount?.active_ads ?? 0)
+        + onlineAds.length,
+    },
     { label: 'Ungelesene Nachrichten', value: totals.unread },
     { label: 'Automatisierungen', value: totals.automations },
   ];
@@ -66,7 +82,7 @@ export function MultiAccountOverview() {
                       <Badge variant={status.variant}>{status.label}</Badge>
                     </div>
                     <div className={styles.accountMeta}>
-                      <span>{a.active_ads} Anzeigen</span>
+                      <span>{a.id === activeAccountId ? onlineAds.length : a.active_ads} Anzeigen</span>
                       <span className={a.unread ? styles.unread : ''}>
                         {a.unread ?? 0} ungelesen
                       </span>
@@ -81,11 +97,11 @@ export function MultiAccountOverview() {
         <Card className={styles.panel}>
           <Card.Header><Card.Title>Zuletzt veröffentlicht</Card.Title></Card.Header>
           <Card.Body>
-            {recent_ads.length === 0 ? (
+            {displayedRecentAds.length === 0 ? (
               <p className={styles.empty}>Noch keine Anzeigen.</p>
             ) : (
               <div className={styles.recentList} data-testid="overview-recent-list">
-                {recent_ads.map((r, i) => (
+                {displayedRecentAds.map((r, i) => (
                   <div key={`${r.account_id}-${r.id ?? i}`} className={styles.recentRow}>
                     <span className={styles.recentTitle}>{r.title}</span>
                     <Badge variant="info">{r.account_name}</Badge>
