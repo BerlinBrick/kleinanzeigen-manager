@@ -5,9 +5,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN curl -fSL https://github.com/novnc/noVNC/archive/refs/tags/v1.6.0.tar.gz -o /tmp/n.tgz && mkdir -p /usr/share/novnc && tar xzf /tmp/n.tgz -C /usr/share/novnc --strip-components=1 && rm /tmp/n.tgz
 ARG TARGETARCH
 ARG BOT_RELEASE=latest
+ARG BOT_VERSION=2026+9870c0a
 RUN mkdir -p /opt/bot-default \
 	&& curl -fSL "https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/${BOT_RELEASE}/kleinanzeigen-bot-linux-${TARGETARCH}" -o /opt/bot-default/kleinanzeigen-bot \
-	&& chmod +x /opt/bot-default/kleinanzeigen-bot
+	&& chmod +x /opt/bot-default/kleinanzeigen-bot \
+	&& test "$(/opt/bot-default/kleinanzeigen-bot version)" = "${BOT_VERSION}"
 ARG PUID=1000
 ARG PGID=1000
 RUN groupadd -g ${PGID} botuser && useradd -u ${PUID} -g botuser -m -s /bin/bash botuser

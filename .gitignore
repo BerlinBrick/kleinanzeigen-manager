@@ -116,6 +116,7 @@ docker/bot/kleinanzeigen-bot
 docker/extensions.yaml
 docker/schedules.yaml
 docker/users.yaml
+docker/.data/
 !src/app/api/ads/
 !src/app/api/ads/online/
 !src/app/api/ads/online/route.ts

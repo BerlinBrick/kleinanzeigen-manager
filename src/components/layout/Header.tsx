@@ -28,6 +28,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/account': 'Profil',
   '/settings': 'Globale Einstellungen',
   '/templates': 'Vorlagen',
+  '/library': 'Anzeigen-Bibliothek',
   '/automation': 'Automatisierung',
   '/messages': 'Nachrichten',
 };
@@ -170,6 +171,21 @@ export function Header() {
             </svg>
           </span>
           <span className={styles.navLabel}>Anzeigen</span>
+        </Link>
+
+        {/* Persistent prepared-ad library */}
+        <Link
+          href="/library"
+          className={styles.headerDropdownBtn}
+          onClick={() => setMobileOpen(false)}
+        >
+          <span className={styles.headerDropdownBtnIcon}>
+            <svg viewBox="0 0 24 24">
+              <path d="M4 4h16v16H4z" />
+              <path d="M8 2v4M16 2v4M8 10h8M8 14h6" />
+            </svg>
+          </span>
+          <span className={styles.navLabel}>Bibliothek</span>
         </Link>
 
         {/* Messages link with unread badge */}

@@ -1,0 +1,50 @@
+.page, .form { max-width: 1200px; margin: 0 auto; }
+.hero, .formHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-5); margin-bottom: var(--space-6); }
+.hero h2, .formHeader h2 { margin: 0 0 var(--space-2); font-size: 1.55rem; }
+.hero p, .formHeader p { margin: 0; color: var(--text-secondary); }
+.toolbar { display: grid; grid-template-columns: minmax(240px, 1fr) 180px auto; gap: var(--space-3); align-items: end; margin-bottom: var(--space-5); }
+.toolbar select, .form select { width: 100%; min-height: 42px; color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0 var(--space-3); }
+.viewToggle { display: flex; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; }
+.viewToggle button { border: 0; padding: 10px 14px; color: var(--text-secondary); background: var(--bg-secondary); cursor: pointer; }
+.viewToggle .active { color: var(--text-primary); background: var(--bg-tertiary); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--space-4); }
+.list { display: grid; gap: var(--space-3); }
+.card { overflow: hidden; display: flex; flex-direction: column; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); }
+.cardList { display: grid; grid-template-columns: 180px 1fr; }
+.imageWrap { height: 190px; position: relative; display: grid; place-items: center; color: var(--text-tertiary); background: var(--bg-tertiary); }
+.cardList .imageWrap { height: 100%; min-height: 180px; }
+.imageWrap img { width: 100%; height: 100%; object-fit: cover; }
+.imageWrap small { position: absolute; right: 8px; bottom: 8px; padding: 4px 7px; border-radius: 999px; background: rgba(0,0,0,.72); color: white; }
+.cardBody { display: flex; min-width: 0; flex: 1; flex-direction: column; padding: var(--space-4); }
+.cardTop { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.status { padding: 3px 8px; border-radius: 999px; font-size: .76rem; font-weight: 700; }
+.draft { color: var(--text-secondary); background: var(--bg-tertiary); }
+.ready { color: #93c5fd; background: rgba(37,99,235,.18); }
+.online { color: #86efac; background: rgba(22,163,74,.18); }
+.card h3 { margin: var(--space-3) 0 var(--space-2); font-size: 1.08rem; }
+.card p { margin: 0 0 var(--space-3); color: var(--text-secondary); display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: auto; color: var(--text-tertiary); font-size: .78rem; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-4); }
+.jobState { margin-top: var(--space-3); color: var(--text-secondary); font-size: .82rem; }
+.onlineLink { margin-top: var(--space-3); color: var(--accent); font-size: .85rem; }
+.loading { display: grid; place-items: center; min-height: 300px; }
+.form { padding-bottom: var(--space-8); }
+.formGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); margin-bottom: var(--space-4); }
+.form label > span, .imagesSection label > span { display: block; margin-bottom: 7px; color: var(--text-secondary); font-size: .85rem; font-weight: 600; }
+.categoryField { grid-column: 1 / -1; }
+.shippingOptions { grid-column: 1 / -1; padding: var(--space-4); border: 1px solid var(--border-color); border-radius: var(--radius-lg); background: var(--bg-secondary); }
+.shippingOptions > span { display: block; margin-bottom: var(--space-3); font-weight: 600; }
+.shippingOptions fieldset { border: 0; padding: 0; margin: 0 0 var(--space-3); }
+.shippingOptions legend { margin-bottom: var(--space-2); color: var(--text-secondary); font-size: .82rem; font-weight: 700; }
+.shippingOptions label { display: inline-flex; align-items: center; margin: 0 var(--space-4) var(--space-2) 0; }
+.shippingOptions label span { margin: 0 0 0 6px; color: var(--text-primary); font-weight: 400; }
+.shippingOptions small { color: var(--red); }
+.imagesSection { margin-top: var(--space-5); padding: var(--space-4); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); }
+.imagesSection input { color: var(--text-secondary); }
+.imagesSection small { display: block; margin-top: var(--space-2); color: var(--text-secondary); }
+.imageGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-3); margin-top: var(--space-4); }
+.imageGrid div { position: relative; aspect-ratio: 4/3; overflow: hidden; border-radius: var(--radius-md); }
+.imageGrid img { width: 100%; height: 100%; object-fit: cover; }
+.imageGrid button { position: absolute; top: 5px; right: 5px; width: 26px; height: 26px; border: 0; border-radius: 50%; color: white; background: rgba(0,0,0,.75); cursor: pointer; }
+.formActions { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-6); }
+@media (max-width: 760px) { .toolbar, .formGrid { grid-template-columns: 1fr; } .hero, .formHeader { flex-direction: column; } .cardList { grid-template-columns: 1fr; } .cardList .imageWrap { height: 190px; } }

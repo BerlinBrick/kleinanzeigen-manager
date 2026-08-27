@@ -172,6 +172,29 @@ export const templateUpdateSchema = z.object({
   ad_data: z.record(z.unknown()).optional(),
 });
 
+// Persistent ad library schemas (SQLite-backed, independent from bot YAML ads)
+export const libraryAdSchema = z.object({
+  title: z.string().trim().min(3, 'Titel muss mindestens 3 Zeichen haben').max(65, 'Titel darf maximal 65 Zeichen haben'),
+  description: z.string().trim().min(10, 'Beschreibung muss mindestens 10 Zeichen haben').max(4000, 'Beschreibung darf maximal 4000 Zeichen haben'),
+  price: z.coerce.number().min(0, 'Preis darf nicht negativ sein'),
+  price_type: z.enum(['FIXED', 'NEGOTIABLE', 'GIVE_AWAY']),
+  category: z.string().trim().min(1, 'Kategorie ist erforderlich').max(200),
+  location_override: z.string().trim().max(200).nullable().optional(),
+  shipping_type: z.enum(['PICKUP', 'SHIPPING']),
+  shipping_costs: z.coerce.number().min(0, 'Versandkosten dürfen nicht negativ sein').nullable().optional(),
+  shipping_options: z.array(z.string().min(1).max(100)).max(20).default([]),
+  attributes: z.record(z.string().max(200), z.string().max(500)).default({}),
+  status: z.enum(['draft', 'ready', 'online']).default('draft'),
+  account_id: z.string().trim().max(100).nullable().optional(),
+}).superRefine((data, ctx) => {
+  if (data.shipping_type === 'SHIPPING' && data.shipping_costs == null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['shipping_costs'], message: 'Versandkosten sind bei Versand erforderlich' });
+  }
+  if (data.shipping_type === 'SHIPPING' && data.shipping_options.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['shipping_options'], message: 'Bitte mindestens eine Versandoption auswählen' });
+  }
+});
+
 // AI generation schema
 export const aiGenerateSchema = z.object({
   prompt: z.string().max(10000).default(''),
