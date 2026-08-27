@@ -23,6 +23,7 @@ export interface KaManageAd {
   l2CategoryName?: string;
   creationDate?: string;
   adLifeTimeInSeconds?: number;
+  isWantedAdType?: boolean;
 }
 
 export class KaManageApiError extends Error {

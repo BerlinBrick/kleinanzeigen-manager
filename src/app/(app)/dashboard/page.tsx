@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import { useAds } from '@/hooks/useAds';
+import { useOnlineAds } from '@/hooks/useAds';
 import { StatsGrid } from '@/components/dashboard/StatsGrid';
 import { HealthIndicators } from '@/components/dashboard/HealthIndicators';
 import { ScheduleCalendar } from '@/components/dashboard/ScheduleCalendar';
@@ -24,7 +24,7 @@ interface StatsResponse {
 
 export default function DashboardPage() {
   const { activeAccount } = useAccount();
-  const { data: adsData, isLoading: adsLoading } = useAds();
+  const { data: adsData, isLoading: adsLoading } = useOnlineAds();
   const ads = useMemo(() => adsData?.ads ?? [], [adsData]);
 
   const adNames = useMemo<Record<string, string>>(() => {

@@ -10,10 +10,23 @@ interface AdsResponse {
   total: number;
 }
 
+interface OnlineAdsResponse extends AdsResponse {
+  loggedIn: boolean;
+  error: string | null;
+}
+
 export function useAds() {
   return useQuery<AdsResponse>({
     queryKey: ['ads'],
     queryFn: () => api.get('/api/ads'),
+    staleTime: 30000,
+  });
+}
+
+export function useOnlineAds() {
+  return useQuery<OnlineAdsResponse>({
+    queryKey: ['ads', 'online'],
+    queryFn: () => api.get('/api/ads/online'),
     staleTime: 30000,
   });
 }

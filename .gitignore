@@ -109,5 +109,8 @@ accounts.yaml
 .temp/
 downloaded-ads/
 ads/
+!src/app/api/ads/
+!src/app/api/ads/online/
+!src/app/api/ads/online/route.ts
 *.deb
 .kleinanzeigen-profile/
