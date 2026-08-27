@@ -59,9 +59,11 @@ export function AdCard({ ad, selected = false, onSelect, selectMode = false, sty
   const expiring = isExpiringSoon(ad);
   const expired = isExpired(ad);
 
-  const imageUrl = ad.first_image && ad.file
-    ? `/api/images/file?file=${encodeURIComponent(ad.file)}&name=${encodeURIComponent(ad.first_image)}`
-    : null;
+  const imageUrl = ad.first_image?.startsWith('http://') || ad.first_image?.startsWith('https://')
+    ? ad.first_image
+    : ad.first_image && ad.file
+      ? `/api/images/file?file=${encodeURIComponent(ad.file)}&name=${encodeURIComponent(ad.first_image)}`
+      : null;
 
   const handleClick = useCallback(() => {
     if (selectMode) {

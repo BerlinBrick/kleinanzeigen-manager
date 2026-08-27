@@ -243,9 +243,11 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
             const isSelected = selectedFiles.has(ad.file);
             const expiring = isExpiringSoon(ad);
             const expired = isExpired(ad);
-            const imageUrl = ad.first_image && ad.file
-              ? `/api/images/file?file=${encodeURIComponent(ad.file)}&name=${encodeURIComponent(ad.first_image)}`
-              : null;
+            const imageUrl = ad.first_image?.startsWith('http://') || ad.first_image?.startsWith('https://')
+              ? ad.first_image
+              : ad.first_image && ad.file
+                ? `/api/images/file?file=${encodeURIComponent(ad.file)}&name=${encodeURIComponent(ad.first_image)}`
+                : null;
             const adStats = ad.id ? statsData?.ads[String(ad.id)] : undefined;
 
             const rowCls = [
@@ -263,7 +265,7 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
 
             return (
               <tr
-                key={ad.file}
+                key={ad.file || ad.id}
                 className={rowCls}
                 style={{ '--anim-delay': `${Math.min(i * 30, 450)}ms` } as React.CSSProperties}
                 onClick={(e) => handleRowClick(ad, e)}

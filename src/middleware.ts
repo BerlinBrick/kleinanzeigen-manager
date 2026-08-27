@@ -28,7 +28,7 @@ export function middleware(request: NextRequest) {
       scriptSrc,
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
-      "img-src 'self' data: blob:",
+      "img-src 'self' data: blob: https://img.kleinanzeigen.de",
       "connect-src 'self'",
       "frame-ancestors 'none'",
     ].join('; '),

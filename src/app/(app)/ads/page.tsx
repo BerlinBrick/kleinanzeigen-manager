@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useAds } from '@/hooks/useAds';
+import { useOnlineAds } from '@/hooks/useAds';
 import { useAiAvailable } from '@/hooks/useAiAvailable';
 import { AdGrid } from '@/components/ads/AdGrid';
 import { AdTable, makeCompare } from '@/components/ads/AdTable';
@@ -26,7 +26,7 @@ type ViewMode = 'grid' | 'table';
 
 function isOnlineOnKA(ad: AdListItem, statsData?: StatsResponse): boolean {
   const state = ad.id ? statsData?.ads[String(ad.id)]?.state : undefined;
-  return state === 'active' || state === 'paused';
+  return state === 'active' || state === 'paused' || (state === undefined && !!ad.id && ad.active);
 }
 
 function filterByParams(ads: AdListItem[], status: string | null, category: string | null, statsData?: StatsResponse): AdListItem[] {
@@ -64,7 +64,7 @@ function filterByParams(ads: AdListItem[], status: string | null, category: stri
 
 
 export default function AdsPage() {
-  const { data, isLoading } = useAds();
+  const { data, isLoading } = useOnlineAds();
   const { data: statsData } = useAdStats();
   const { isAiAvailable } = useAiAvailable();
   const { toast } = useToast();

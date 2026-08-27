@@ -16,7 +16,7 @@ export function AdGrid({ ads, selectedFiles, onSelect, selectMode = false }: AdG
     <div className={styles.grid}>
       {ads.map((ad, i) => (
         <AdCard
-          key={ad.file}
+          key={ad.file || ad.id}
           ad={ad}
           selected={selectedFiles.has(ad.file)}
           onSelect={onSelect}
