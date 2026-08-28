@@ -49,6 +49,8 @@ export interface Ad {
 }
 
 export interface AdListItem {
+  account_id?: string;
+  account_name?: string;
   id?: number;
   title: string;
   price?: number;

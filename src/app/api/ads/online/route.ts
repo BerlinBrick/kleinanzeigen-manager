@@ -7,6 +7,7 @@ import {
   type KaManageAd,
 } from '@/lib/ka/management-api';
 import type { AdListItem, PriceType } from '@/types/ad';
+import { accountWorkspace, loadAccounts } from '@/lib/accounts/accounts';
 
 function parsePrice(value: string): number | undefined {
   const normalized = value.replace(/[^\d,.-]/g, '').replace('.', '').replace(',', '.');
@@ -20,8 +21,10 @@ function toIsoDate(value?: string): string | undefined {
   return match ? `${match[3]}-${match[2]}-${match[1]}` : value;
 }
 
-function toListItem(ad: KaManageAd): AdListItem {
+function toListItem(ad: KaManageAd, accountId?: string, accountName?: string): AdListItem {
   return {
+    account_id: accountId,
+    account_name: accountName,
     id: ad.id,
     title: ad.title,
     price: parsePrice(ad.price),
@@ -44,6 +47,41 @@ function toListItem(ad: KaManageAd): AdListItem {
 
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser(request);
+  if (request.nextUrl.searchParams.get('scope') === 'all') {
+    const accounts = loadAccounts(user.userWorkspace);
+    const results = await Promise.all(accounts.map(async (account) => {
+      const workspace = accountWorkspace(user.userWorkspace, account);
+      if (!loadSessionCookies(workspace)) {
+        return { account_id: account.id, account_name: account.display_name, loggedIn: false, successful: false, ads: [] as AdListItem[], error: 'Keine gespeicherte Kleinanzeigen-Session vorhanden' };
+      }
+      try {
+        const ads = await fetchKaAds(workspace);
+        return { account_id: account.id, account_name: account.display_name, loggedIn: true, successful: true, ads: ads.map((ad) => toListItem(ad, account.id, account.display_name)), error: null };
+      } catch (error) {
+        return {
+          account_id: account.id,
+          account_name: account.display_name,
+          loggedIn: false,
+          successful: false,
+          ads: [] as AdListItem[],
+          error: error instanceof Error ? error.message : 'Kleinanzeigen API nicht erreichbar',
+        };
+      }
+    }));
+    const ads = results.flatMap((result) => result.ads);
+    const failedAccounts = results.filter((result) => !result.successful);
+    return NextResponse.json({
+      loggedIn: results.some((result) => result.successful),
+      ads,
+      total: ads.length,
+      error: failedAccounts.length === 0
+        ? null
+        : failedAccounts.length === results.length
+          ? 'Online-Anzeigen konnten für kein Konto geladen werden'
+          : 'Online-Anzeigen konnten für mindestens ein Konto nicht geladen werden',
+      accounts: results.map(({ ads: _ads, successful: _successful, ...result }) => result),
+    });
+  }
   if (!loadSessionCookies(user.workspace)) {
     return NextResponse.json({
       loggedIn: false,
@@ -57,7 +95,7 @@ export async function GET(request: NextRequest) {
     const ads = await fetchKaAds(user.workspace);
     return NextResponse.json({
       loggedIn: true,
-      ads: ads.map(toListItem),
+      ads: ads.map((ad) => toListItem(ad)),
       total: ads.length,
       error: null,
     });

@@ -6,7 +6,6 @@ import {
   accountWorkspace,
   setAccountCredentials,
   computeLoginStatus,
-  clearAccountSession,
 } from '@/lib/accounts/accounts';
 import { isEnvPlaceholder, readConfig } from '@/lib/yaml/config';
 
@@ -62,8 +61,6 @@ export async function PUT(request: NextRequest, context: RouteContext) {
 
     const ws = accountWorkspace(user.userWorkspace, account);
     setAccountCredentials(ws, username, password);
-    // New credentials invalidate any cached session so the next login uses them.
-    if (password) clearAccountSession(ws);
 
     return NextResponse.json({ status: 'ok', login_status: computeLoginStatus(ws) });
   } catch (error) {

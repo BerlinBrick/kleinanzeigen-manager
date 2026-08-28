@@ -17,14 +17,15 @@ export async function POST(request: NextRequest, { params }: Context) {
     const { id } = await params;
     const ad = getLibraryAd(user.userWorkspace, id);
     if (!ad) return NextResponse.json({ detail: 'Vorlage nicht gefunden' }, { status: 404 });
-    const plan = buildLibraryPublishPlan(user.userWorkspace, ad);
+    const body = await request.json().catch(() => ({}));
+    const accountId = typeof body.account_id === 'string' && body.account_id.trim() ? body.account_id.trim() : null;
+    const plan = buildLibraryPublishPlan(user.userWorkspace, ad, accountId);
     let onlineBefore: Awaited<ReturnType<typeof fetchKaAds>> = [];
     if (plan.ready && plan.workspace) {
       try { onlineBefore = await fetchKaAds(plan.workspace); } catch { plan.errors.push('Die Kleinanzeigen-Session des ausgewählten Kontos ist nicht mehr gültig.'); plan.ready = false; }
     }
     if (!plan.ready) return NextResponse.json({ ready: false, errors: plan.errors, detail: plan.errors.join(' ') }, { status: 400 });
 
-    const body = await request.json().catch(() => ({}));
     if (body.confirm !== true) {
       return NextResponse.json({ ready: true, account_id: plan.accountId, account_name: plan.accountName, title: ad.title, image_count: ad.images.length });
     }

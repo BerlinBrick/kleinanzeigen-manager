@@ -13,6 +13,7 @@ const eslintConfig = [
   {
     ignores: [
       ".next/**",
+      "**/.temp/**",
       ".worktrees/**",
       "docker/export/**",
       "users/**",

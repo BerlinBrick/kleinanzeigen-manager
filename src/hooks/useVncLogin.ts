@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api/client';
 import { useToast } from '@/components/ui';
+import { useAccount } from '@/contexts/AccountContext';
 
 interface VncStatusResponse {
   status: 'none' | 'starting' | 'ready' | 'error';
@@ -47,8 +48,6 @@ export interface UseVncLogin {
   stop: () => Promise<void>;
 }
 
-const VNC_QUERY_KEY = ['vnc-status'];
-
 // Number of consecutive logged-in polls required before auto-closing the recovery
 // window. The VNC browser starts on the SSO login page (KA_START_URL); its URL can briefly
 // match isLoggedInUrl during a redirect hop before settling in the login flow — a single
@@ -72,7 +71,9 @@ const VNC_CONNECTING_TIMEOUT_MS = 120_000;
  */
 export function useVncLogin(onLoginSuccess?: () => void): UseVncLogin {
   const { toast } = useToast();
+  const { activeAccountId } = useAccount();
   const queryClient = useQueryClient();
+  const vncQueryKey = useMemo(() => ['vnc-status', activeAccountId], [activeAccountId]);
   const [modalOpen, setModalOpen] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -81,7 +82,7 @@ export function useVncLogin(onLoginSuccess?: () => void): UseVncLogin {
   const [autoCloseOnLogin, setAutoCloseOnLogin] = useState(false);
 
   const { data, dataUpdatedAt } = useQuery<VncStatusResponse>({
-    queryKey: VNC_QUERY_KEY,
+    queryKey: vncQueryKey,
     // ?open=1 is a heartbeat that keeps the session alive while the window is open;
     // without it the server reaps the idle session after a timeout.
     queryFn: () => api.get<VncStatusResponse>(modalOpen ? '/api/bot/vnc?open=1' : '/api/bot/vnc'),
@@ -105,8 +106,8 @@ export function useVncLogin(onLoginSuccess?: () => void): UseVncLogin {
   const active = data?.status === 'ready' || data?.status === 'starting';
 
   const invalidate = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: VNC_QUERY_KEY });
-  }, [queryClient]);
+    queryClient.invalidateQueries({ queryKey: vncQueryKey });
+  }, [queryClient, vncQueryKey]);
 
   const startSession = useCallback(async (autoClose: boolean) => {
     if (busy) return;

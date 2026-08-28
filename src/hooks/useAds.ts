@@ -25,8 +25,8 @@ export function useAds() {
 
 export function useOnlineAds() {
   return useQuery<OnlineAdsResponse>({
-    queryKey: ['ads', 'online'],
-    queryFn: () => api.get('/api/ads/online'),
+    queryKey: ['ads', 'online', 'all-accounts'],
+    queryFn: () => api.get('/api/ads/online?scope=all'),
     staleTime: 30000,
   });
 }

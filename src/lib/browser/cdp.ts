@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { KA_MANAGE_URL } from '@/lib/ka/management-api';
 
 interface CdpResponse {
   id: number;
@@ -233,13 +234,15 @@ export async function extractCookiesFromCDP(port: number): Promise<string> {
         }
       };
       ws.on('message', handler);
-      ws.send(JSON.stringify({ id, method: 'Network.getAllCookies' }));
+      // Ask Chromium which cookies it would actually send to the management URL.
+      // getAllCookies also returns login/tracking subdomain cookies; serialising those
+      // into one Cookie header can make Kleinanzeigen reject an otherwise valid login.
+      ws.send(JSON.stringify({ id, method: 'Network.getCookies', params: { urls: [KA_MANAGE_URL] } }));
       setTimeout(() => reject(new Error('Cookie timeout')), COOKIE_FETCH_TIMEOUT_MS);
     });
 
-    const allCookies = cookieResponse.result?.cookies ?? [];
-    return allCookies
-      .filter(c => c.domain.includes('kleinanzeigen.de'))
+    const selectedCookies = cookieResponse.result?.cookies ?? [];
+    return selectedCookies
       .map(c => `${c.name}=${c.value}`)
       .join('; ');
   } finally {

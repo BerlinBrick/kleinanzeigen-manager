@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api/client';
-import { Button, EmptyState, Input, Spinner, Textarea, useToast, showConfirm } from '@/components/ui';
+import { Button, EmptyState, Input, Modal, Spinner, Textarea, useToast, showConfirm } from '@/components/ui';
 import type { LibraryAd, LibraryAdInput, LibraryAdStatus } from '@/types/library';
 import { LibraryCategoryAttributes, LibraryCategoryPicker, validateLibraryAttributes } from '@/components/library/LibraryCategoryPicker';
 import { prepareLibraryImage } from '@/lib/images/library-upload-client';
@@ -30,6 +30,8 @@ export default function LibraryPage() {
   const [view, setView] = useState<'grid' | 'list'>('grid');
   const [editing, setEditing] = useState<LibraryAd | 'new' | null>(null);
   const [publishJobs, setPublishJobs] = useState<Record<string, { status: JobStatus; error?: string }>>({});
+  const [accounts, setAccounts] = useState<AccountOption[]>([]);
+  const [publishChoice, setPublishChoice] = useState<{ ad: LibraryAd; accountId: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,6 +44,9 @@ export default function LibraryPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    api.get<{ accounts: AccountOption[] }>('/api/accounts').then((result) => setAccounts(result.accounts ?? [])).catch(() => {});
+  }, []);
 
   const filtered = useMemo(() => {
     const term = search.trim().toLocaleLowerCase('de');
@@ -64,9 +69,9 @@ export default function LibraryPage() {
     await load();
   }, [load, toast]);
 
-  const publish = useCallback(async (ad: LibraryAd) => {
+  const publish = useCallback(async (ad: LibraryAd, accountId: string) => {
     try {
-      const preflight = await api.post<{ ready: true; account_name: string; title: string; image_count: number }>(`/api/library/${ad.id}/publish`, { confirm: false });
+      const preflight = await api.post<{ ready: true; account_name: string; title: string; image_count: number }>(`/api/library/${ad.id}/publish`, { confirm: false, account_id: accountId });
       const confirmed = await showConfirm(
         'Anzeige jetzt veröffentlichen',
         `„${preflight.title}“ wird mit ${preflight.image_count} Bild(ern) über das Konto „${preflight.account_name}“ öffentlich auf Kleinanzeigen eingestellt. Fortfahren?`,
@@ -74,7 +79,7 @@ export default function LibraryPage() {
         'Abbrechen',
       );
       if (!confirmed) return;
-      const started = await api.post<{ job: Job }>(`/api/library/${ad.id}/publish`, { confirm: true });
+      const started = await api.post<{ job: Job }>(`/api/library/${ad.id}/publish`, { confirm: true, account_id: accountId });
       setPublishJobs((current) => ({ ...current, [ad.id]: { status: started.job.status } }));
       toast('success', 'Posting-Job gestartet');
 
@@ -136,16 +141,27 @@ export default function LibraryPage() {
       ) : (
         <div className={view === 'grid' ? styles.grid : styles.list}>
           {filtered.map((ad) => (
-            <LibraryCard key={ad.id} ad={ad} list={view === 'list'} publishState={publishJobs[ad.id]} onEdit={() => setEditing(ad)} onDuplicate={() => void duplicate(ad)} onDelete={() => void remove(ad)} onPublish={() => void publish(ad)} />
+            <LibraryCard key={ad.id} ad={ad} accountName={accounts.find((account) => account.id === ad.account_id)?.display_name} list={view === 'list'} publishState={publishJobs[ad.id]} onEdit={() => setEditing(ad)} onDuplicate={() => void duplicate(ad)} onDelete={() => void remove(ad)} onPublish={() => setPublishChoice({ ad, accountId: ad.account_id ?? accounts[0]?.id ?? '' })} />
           ))}
         </div>
+      )}
+      {publishChoice && (
+        <Modal
+          open
+          onClose={() => setPublishChoice(null)}
+          title="Konto für Veröffentlichung auswählen"
+          footer={<><Button variant="ghost" onClick={() => setPublishChoice(null)}>Abbrechen</Button><Button variant="primary" disabled={!publishChoice.accountId} onClick={() => { const choice = publishChoice; setPublishChoice(null); void publish(choice.ad, choice.accountId); }}>Weiter zum Preflight</Button></>}
+        >
+          <p>Die Vorlage bleibt unverändert. Diese Auswahl gilt nur für den nächsten Veröffentlichungsauftrag.</p>
+          <label><span>Kleinanzeigen-Konto</span><select value={publishChoice.accountId} onChange={(event) => setPublishChoice((current) => current ? { ...current, accountId: event.target.value } : null)}><option value="">Bitte auswählen</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.display_name}</option>)}</select></label>
+        </Modal>
       )}
     </div>
   );
 }
 
-function LibraryCard({ ad, list, publishState, onEdit, onDuplicate, onDelete, onPublish }: {
-  ad: LibraryAd; list: boolean; publishState?: { status: JobStatus; error?: string }; onEdit: () => void; onDuplicate: () => void; onDelete: () => void; onPublish: () => void;
+function LibraryCard({ ad, accountName, list, publishState, onEdit, onDuplicate, onDelete, onPublish }: {
+  ad: LibraryAd; accountName?: string; list: boolean; publishState?: { status: JobStatus; error?: string }; onEdit: () => void; onDuplicate: () => void; onDelete: () => void; onPublish: () => void;
 }) {
   return (
     <article className={`${styles.card} ${list ? styles.cardList : ''}`}>
@@ -159,7 +175,7 @@ function LibraryCard({ ad, list, publishState, onEdit, onDuplicate, onDelete, on
         <div className={styles.cardTop}><span className={`${styles.status} ${styles[ad.status]}`}>{STATUS_LABELS[ad.status]}</span><strong>{ad.price.toLocaleString('de-DE')} €</strong></div>
         <h3>{ad.title}</h3>
         <p>{ad.description}</p>
-        <div className={styles.meta}><span>{ad.category}</span><span>{ad.location_override || 'Standort vom Konto'}</span><span>{ad.shipping_type === 'SHIPPING' ? `Versand ${ad.shipping_costs?.toLocaleString('de-DE') ?? '0'} €` : 'Nur Abholung'}</span><span>Geändert {new Date(ad.updated_at).toLocaleDateString('de-DE')}</span></div>
+        <div className={styles.meta}><span>{ad.category}</span><span>{accountName ? `Konto: ${accountName}` : 'Kein Konto fest zugeordnet'}</span><span>{ad.location_override || 'Standort vom Konto'}</span><span>{ad.shipping_type === 'SHIPPING' ? `Versand ${ad.shipping_costs?.toLocaleString('de-DE') ?? '0'} €` : 'Nur Abholung'}</span><span>Geändert {new Date(ad.updated_at).toLocaleDateString('de-DE')}</span></div>
         {publishState && <div className={styles.jobState}>Posting-Job: {publishState.status}{publishState.error ? ` · ${publishState.error}` : ''}</div>}
         {ad.kleinanzeigen_id && <a className={styles.onlineLink} href={ad.kleinanzeigen_url ?? '#'} target="_blank" rel="noreferrer">Kleinanzeigen-ID {ad.kleinanzeigen_id} öffnen</a>}
         <div className={styles.actions}>

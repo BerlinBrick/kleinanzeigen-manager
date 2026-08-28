@@ -21,6 +21,7 @@ import type { SortDir } from '@/hooks/useSort';
 import { isExpiringSoon, isExpired, isReserved } from '@/lib/ads/status';
 import type { StatsResponse } from '@/hooks/useAdStats';
 import styles from './ads.module.scss';
+import { adListKey } from '@/lib/ads/identity';
 
 type ViewMode = 'grid' | 'table';
 
@@ -154,8 +155,8 @@ export default function AdsPage() {
     // In select mode, keep selected ads visible even if they'd be filtered out —
     // so their row highlight doesn't silently disappear after a status change.
     if (selectMode && selectedFiles.size > 0) {
-      const visibleFiles = new Set(copy.map((a) => a.file));
-      const pinned = allAds.filter((a) => selectedFiles.has(a.file) && !visibleFiles.has(a.file));
+      const visibleFiles = new Set(copy.map(adListKey));
+      const pinned = allAds.filter((a) => selectedFiles.has(adListKey(a)) && !visibleFiles.has(adListKey(a)));
       if (pinned.length > 0) return [...copy, ...pinned];
     }
     return copy;
@@ -258,7 +259,12 @@ export default function AdsPage() {
       )}
       <QuickAiCreate ref={quickAiRef} />
 
-      {allAds.length === 0 ? (
+      {data?.error ? (
+        <div className={styles.emptyState} role="alert">
+          <h3 className={styles.emptyTitle}>Online-Anzeigen konnten nicht geladen werden</h3>
+          <p className={styles.emptyMessage}>{data.error}</p>
+        </div>
+      ) : allAds.length === 0 ? (
         /* Empty state matching legacy design exactly */
         <div className={styles.emptyState}>
           {/* Monitor SVG icon */}

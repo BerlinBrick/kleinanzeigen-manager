@@ -6,18 +6,28 @@ import { insertTextIntoBrowser, extractCookiesFromCDP } from '@/lib/browser/cdp'
 import { isWorkspaceJobRunning, isWorkspaceLoginRequired } from '@/lib/bot/jobs';
 import { readMergedConfig } from '@/lib/yaml/config';
 import { resolveBrowserMode, isVncAttachMode } from '@/lib/bot/browser-mode';
-import { saveSessionCookies } from '@/lib/ka/management-api';
+import {
+  fetchKaAdsWithCookies,
+  hasRequiredAuthCookies,
+  loadSessionCookies,
+  saveSessionCookies,
+} from '@/lib/ka/management-api';
 
 const MAX_PASTE_LENGTH = 4096;
 
-async function saveLoginSession(workspace: string, cdpPort: number): Promise<void> {
+async function validateAndSaveLoginSession(workspace: string, cdpPort: number): Promise<boolean> {
   try {
     const cookies = await extractCookiesFromCDP(cdpPort);
-    if (!cookies) return;
+    if (!hasRequiredAuthCookies(cookies)) return false;
 
+    // Do not trust the active tab URL: Auth0 can leave a stale login tab in front even
+    // though the shared browser profile already contains a valid KA login.
+    await fetchKaAdsWithCookies(cookies);
     saveSessionCookies(workspace, cookies);
+    return true;
   } catch (error) {
-    console.error('[vnc] session save failed', error);
+    console.error('[vnc] session validation/save failed', error);
+    return false;
   }
 }
 // Auto-stop a session whose login window has been closed this long with no attached job.
@@ -72,10 +82,14 @@ export async function GET(request: NextRequest) {
     const loginRequired = isWorkspaceLoginRequired(user.workspace);
     const session = getVncSession(user.workspace);
     if (session) {
-      const loggedIn = await isVncLoggedIn(user.workspace);
+      const loggedInByUrl = await isVncLoggedIn(user.workspace);
+      let loggedIn = Boolean(loadSessionCookies(user.workspace));
 
-      if (loggedIn) {
-        await saveLoginSession(user.workspace, session.cdpPort);
+      // A missing persisted session must be recoverable from valid cookies even while
+      // the visible tab remains on an SSO URL. Normal post-login navigation also refreshes
+      // the persisted cookie snapshot as before.
+      if (!loggedIn || loggedInByUrl) {
+        loggedIn = await validateAndSaveLoginSession(user.workspace, session.cdpPort);
       }
 
       return NextResponse.json({ status: session.status, token: session.token, loggedIn, jobRunning, mode, attachMode, loginRequired });

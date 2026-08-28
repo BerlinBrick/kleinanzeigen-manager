@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-const KA_MANAGE_URL = 'https://www.kleinanzeigen.de/m-meine-anzeigen-verwalten.json';
+export const KA_MANAGE_URL = 'https://www.kleinanzeigen.de/m-meine-anzeigen-verwalten.json';
 export const SESSION_FILE = '.temp/login-session.json';
 
 export interface KaManageAd {
@@ -74,6 +74,12 @@ export function saveSessionCookies(workspace: string, cookies: string): void {
   );
 }
 
+/** A browser cookie export is only a login candidate when both KA auth tokens are present. */
+export function hasRequiredAuthCookies(cookies: string): boolean {
+  const names = new Set(cookies.split(';').map((part) => part.trim().split('=', 1)[0]));
+  return names.has('access_token') && names.has('refresh_token');
+}
+
 async function fetchPage(cookies: string, page: number): Promise<KaManageResponse> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -108,6 +114,11 @@ export async function fetchKaAds(workspace: string): Promise<KaManageAd[]> {
   const cookies = loadSessionCookies(workspace);
   if (!cookies) return [];
 
+  return fetchKaAdsWithCookies(cookies);
+}
+
+/** Validate/use an in-memory browser cookie export before it is persisted. */
+export async function fetchKaAdsWithCookies(cookies: string): Promise<KaManageAd[]> {
   const first = await fetchPage(cookies, 1);
   const firstAds = first.ads ?? [];
   if (firstAds.length === 0) return [];

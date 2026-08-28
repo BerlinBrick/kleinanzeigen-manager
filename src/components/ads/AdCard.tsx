@@ -12,6 +12,8 @@ import { getCurrentPrice, getAprError, getAprErrorTitle } from '@/lib/ads/pricin
 import { detectSizeGroup } from '@/lib/shipping';
 import { SaveAsTemplateModal } from './SaveAsTemplateModal';
 import styles from './AdCard.module.scss';
+import { useAccount } from '@/contexts/AccountContext';
+import { adListKey } from '@/lib/ads/identity';
 
 interface AdCardProps {
   ad: AdListItem;
@@ -47,6 +49,7 @@ function formatPrice(ad: AdListItem): React.ReactNode {
 
 export function AdCard({ ad, selected = false, onSelect, selectMode = false, style }: AdCardProps) {
   const router = useRouter();
+  const { setActiveAccount } = useAccount();
   const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number; maxHeight?: number } | null>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const { data: statsData } = useAdStats();
@@ -67,16 +70,18 @@ export function AdCard({ ad, selected = false, onSelect, selectMode = false, sty
 
   const handleClick = useCallback(() => {
     if (selectMode) {
-      onSelect?.(ad.file);
+      onSelect?.(adListKey(ad));
     } else {
+      if (ad.account_id) setActiveAccount(ad.account_id);
       router.push(`/ads/edit?file=${encodeURIComponent(ad.file)}`);
     }
-  }, [router, ad.file, selectMode, onSelect]);
+  }, [router, ad, selectMode, onSelect, setActiveAccount]);
 
 
 
   const handleMenuClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+    if (ad.account_id) setActiveAccount(ad.account_id);
     if (menuPos) { setMenuPos(null); return; }
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const spaceBelow = window.innerHeight - rect.bottom - 8;
@@ -86,7 +91,7 @@ export function AdCard({ ad, selected = false, onSelect, selectMode = false, sty
       ? { bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right, maxHeight: spaceAbove }
       : { top: rect.bottom + 4, right: window.innerWidth - rect.right, maxHeight: spaceBelow },
     );
-  }, [menuPos]);
+  }, [menuPos, ad.account_id, setActiveAccount]);
 
   // Build card class names
   const cardClasses = [
@@ -193,6 +198,8 @@ export function AdCard({ ad, selected = false, onSelect, selectMode = false, sty
         <div className={styles.cardTitle} title={ad.title || ''}>
           {ad.title || '(Ohne Titel)'}
         </div>
+
+        {ad.account_name && <Badge variant="info">{ad.account_name}</Badge>}
 
         {priceDisplay && (
           <div className={styles.cardPrice}>{priceDisplay}</div>

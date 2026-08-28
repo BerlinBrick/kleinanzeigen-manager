@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { Card, Button, Badge, Modal, Input, EmptyState, PageLoader, useToast, showConfirm } from '@/components/ui';
 import { useAccount } from '@/contexts/AccountContext';
 import {
@@ -14,6 +13,8 @@ import {
   useSetCredentials,
 } from '@/hooks/useAccounts';
 import { api } from '@/lib/api/client';
+import { useVncLogin } from '@/hooks/useVncLogin';
+import { VncLoginModal } from '@/components/bot/VncLoginModal';
 import type { AccountSummary } from '@/contexts/AccountContext';
 import styles from './page.module.scss';
 
@@ -32,9 +33,12 @@ function formatSync(iso: string | null): string {
 
 export default function AccountsPage() {
   const { data, isLoading } = useAccountsList();
-  const { activeAccountId, setActiveAccount } = useAccount();
-  const router = useRouter();
+  const { activeAccountId, setActiveAccount, refresh } = useAccount();
   const { toast } = useToast();
+  const vnc = useVncLogin(() => {
+    refresh();
+    toast('success', 'Kleinanzeigen-Konto verbunden');
+  });
 
   const createAccount = useCreateAccount();
   const renameAccount = useRenameAccount();
@@ -59,10 +63,10 @@ export default function AccountsPage() {
     }
   };
 
-  const handleConnect = (a: AccountSummary) => {
+  const handleConnect = async (a: AccountSummary) => {
     setActiveAccount(a.id);
-    toast('info', `Konto „${a.display_name}" aktiv — Anmeldung wird geöffnet`);
-    router.push('/messages');
+    toast('info', `Manuelle Anmeldung für „${a.display_name}" wird geöffnet`);
+    await vnc.start();
   };
 
   const handleSync = async (a: AccountSummary) => {
@@ -167,7 +171,7 @@ export default function AccountsPage() {
                         Auswählen
                       </Button>
                     )}
-                    <Button size="sm" variant="primary" onClick={() => handleConnect(a)} data-testid={`connect-account-${a.id}`}>
+                    <Button size="sm" variant="primary" loading={vnc.busy && isActive} onClick={() => void handleConnect(a)} data-testid={`connect-account-${a.id}`}>
                       Anmelden
                     </Button>
                     <Button size="sm" variant="secondary" onClick={() => handleSync(a)} data-testid={`sync-account-${a.id}`}>
@@ -230,6 +234,7 @@ export default function AccountsPage() {
           }}
         />
       )}
+      <VncLoginModal open={vnc.modalOpen} token={vnc.token} onClose={() => void vnc.close()} />
     </div>
   );
 }

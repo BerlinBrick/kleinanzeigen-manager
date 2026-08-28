@@ -18,9 +18,10 @@ export interface LibraryPublishPlan {
   adData: Record<string, unknown> | null;
 }
 
-export function buildLibraryPublishPlan(userWorkspace: string, ad: LibraryAd): LibraryPublishPlan {
+export function buildLibraryPublishPlan(userWorkspace: string, ad: LibraryAd, accountId?: string | null): LibraryPublishPlan {
   const errors: string[] = [];
-  const account = ad.account_id ? getAccountById(userWorkspace, ad.account_id) : null;
+  const selectedAccountId = accountId ?? ad.account_id;
+  const account = selectedAccountId ? getAccountById(userWorkspace, selectedAccountId) : null;
   if (!account) errors.push('Bitte ein gültiges Kleinanzeigen-Konto zuordnen.');
   const workspace = account ? accountWorkspace(userWorkspace, account) : null;
 

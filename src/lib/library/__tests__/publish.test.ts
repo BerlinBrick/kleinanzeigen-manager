@@ -2,9 +2,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createLibraryAd, libraryImagesDir } from '@/lib/library/store';
+import { createLibraryAd, getLibraryAd, libraryImagesDir } from '@/lib/library/store';
 import { buildLibraryPublishPlan, prepareLibraryDraft, reconcilePublishedLibraryAd } from '@/lib/library/publish';
 import { readAd } from '@/lib/yaml/ads';
+import { accountWorkspace, createAccount } from '@/lib/accounts/accounts';
+import { writeConfig } from '@/lib/yaml/config';
 
 describe('library publish bridge', () => {
   let workspace: string;
@@ -38,6 +40,31 @@ describe('library publish bridge', () => {
     const file = prepareLibraryDraft(workspace, withImage, plan);
     expect(readAd(file)._library_id).toBe(ad.id);
     expect(fs.existsSync(path.join(path.dirname(file), 'bild.jpg'))).toBe(true);
+  });
+
+  it('can override the stored account for one publish without changing the template', () => {
+    const second = createAccount(workspace, 'Konto Zwei');
+    const secondWorkspace = accountWorkspace(workspace, second);
+    fs.mkdirSync(path.join(secondWorkspace, '.temp'), { recursive: true });
+    fs.writeFileSync(path.join(secondWorkspace, '.temp', 'login-session.json'), JSON.stringify({ cookies: 'second=valid' }));
+    writeConfig(secondWorkspace, {
+      login: { username: 'second@example.com', password: 'secret' },
+      ad_defaults: { contact: { name: 'Zwei', zipcode: '10115', location: 'Berlin' } },
+    });
+    const ad = createLibraryAd(workspace, {
+      title: 'Vorbereitete Anzeige', description: 'Eine vollständige Beschreibung für das Posting.',
+      price: 25, price_type: 'NEGOTIABLE', category: '297/288', location_override: null,
+      shipping_type: 'PICKUP', shipping_options: [], attributes: {}, status: 'ready', account_id: 'default',
+    });
+    fs.mkdirSync(libraryImagesDir(workspace, ad.id), { recursive: true });
+    fs.writeFileSync(path.join(libraryImagesDir(workspace, ad.id), 'photo.jpg'), 'image');
+
+    const plan = buildLibraryPublishPlan(workspace, { ...ad, images: ['photo.jpg'] }, second.id);
+
+    expect(plan.ready).toBe(true);
+    expect(plan.accountId).toBe(second.id);
+    expect(plan.workspace).toBe(secondWorkspace);
+    expect(getLibraryAd(workspace, ad.id)?.account_id).toBe('default');
   });
 
   it('blocks missing sessions, images and account contact fields', () => {

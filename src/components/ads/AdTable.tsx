@@ -15,6 +15,8 @@ import { getCurrentPrice, getAprError, getAprErrorTitle } from '@/lib/ads/pricin
 import type { AdStatsEntry } from '@/types/stats';
 import { SaveAsTemplateModal } from './SaveAsTemplateModal';
 import styles from './AdTable.module.scss';
+import { useAccount } from '@/contexts/AccountContext';
+import { adListKey } from '@/lib/ads/identity';
 
 export type AdSortKey = 'title' | 'price' | 'apr' | 'category' | 'shipping_type' | 'created_on' | 'updated_on' | 'status' | 'views' | 'watchlist' | 'expires_at' | 'republication_interval';
 
@@ -122,6 +124,7 @@ export function makeCompare(statsData: StatsMap | undefined) {
 
 export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sortKey: controlledKey, sortDir: controlledDir, onSortChange }: AdTableProps) {
   const router = useRouter();
+  const { setActiveAccount } = useAccount();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [shadowLeft, setShadowLeft] = useState(false);
   const [shadowRight, setShadowRight] = useState(false);
@@ -184,12 +187,13 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
     (ad: AdListItem, e: React.MouseEvent) => {
       if ((e.target as HTMLElement).closest(`.${styles.menuBtn}`)) return;
       if (selectMode) {
-        onSelect(ad.file);
+        onSelect(adListKey(ad));
       } else {
+        if (ad.account_id) setActiveAccount(ad.account_id);
         router.push(`/ads/edit?file=${encodeURIComponent(ad.file)}`);
       }
     },
-    [router, selectMode, onSelect],
+    [router, selectMode, onSelect, setActiveAccount],
   );
 
   return (
@@ -240,7 +244,7 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
         <tbody>
           {sortedAds.map((ad, i) => {
             const isDraft = !ad.id && !ad.is_archived;
-            const isSelected = selectedFiles.has(ad.file);
+            const isSelected = selectedFiles.has(adListKey(ad));
             const expiring = isExpiringSoon(ad);
             const expired = isExpired(ad);
             const imageUrl = ad.first_image?.startsWith('http://') || ad.first_image?.startsWith('https://')
@@ -265,7 +269,7 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
 
             return (
               <tr
-                key={ad.file || ad.id}
+                key={adListKey(ad)}
                 className={rowCls}
                 style={{ '--anim-delay': `${Math.min(i * 30, 450)}ms` } as React.CSSProperties}
                 onClick={(e) => handleRowClick(ad, e)}
@@ -281,6 +285,7 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
                     </div>
                     <div className={styles.titleText}>
                       <div className={styles.name} title={ad.title}>{ad.title || '(Ohne Titel)'}</div>
+                      {ad.account_name && <Badge variant="info">{ad.account_name}</Badge>}
                       {(ad.shipping_type || adStats) && (
                         <div className={styles.mobileMeta}>
                           {ad.shipping_type === 'SHIPPING' && (() => {
@@ -366,7 +371,9 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
                     className={styles.menuBtn}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (openMenu === ad.file) {
+                      if (ad.account_id) setActiveAccount(ad.account_id);
+                      const itemKey = adListKey(ad);
+                      if (openMenu === itemKey) {
                         setOpenMenu(null);
                       } else {
                         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -377,13 +384,13 @@ export function AdTable({ ads, selectedFiles, onSelect, selectMode = false, sort
                           ? { bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right, maxHeight: spaceAbove }
                           : { top: rect.bottom + 4, right: window.innerWidth - rect.right, maxHeight: spaceBelow },
                         );
-                        setOpenMenu(ad.file);
+                        setOpenMenu(itemKey);
                       }
                     }}
                     title="Aktionen"
                   >⋮</button>
 
-                  {openMenu === ad.file && menuPos && (
+                  {openMenu === adListKey(ad) && menuPos && (
                     <DropdownMenu
                       items={buildMenuItems(ad)}
                       pos={menuPos}

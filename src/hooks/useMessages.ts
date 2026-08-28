@@ -3,6 +3,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api/client';
 import type { ConversationsResponse, ConversationDetail } from '@/types/message';
+import { useAccount } from '@/contexts/AccountContext';
 
 interface MessagingStatus {
   status: 'ready' | 'starting' | 'logging_in' | 'error' | 'not_started' | 'browserless' | 'awaiting_mfa';
@@ -13,8 +14,9 @@ interface MessagingStatus {
 }
 
 export function useMessagingStatus() {
+  const { activeAccountId } = useAccount();
   return useQuery<MessagingStatus>({
-    queryKey: ['messaging-status'],
+    queryKey: ['messaging-status', activeAccountId],
     queryFn: () => api.get('/api/messages/status'),
     retry: 2,
     refetchInterval: (query) => {
@@ -71,8 +73,9 @@ export function useSubmitMessagingMfa() {
 }
 
 export function useUnreadCount() {
+  const { activeAccountId } = useAccount();
   return useQuery<MessagingStatus & { numUnreadMessages?: number }>({
-    queryKey: ['unread-count'],
+    queryKey: ['unread-count', activeAccountId],
     queryFn: () => api.get('/api/messages/status'),
     refetchInterval: (query) => query.state.error ? false : 30000,
     retry: 0,
@@ -81,8 +84,9 @@ export function useUnreadCount() {
 }
 
 export function useConversations(size = 25) {
+  const { activeAccountId } = useAccount();
   return useInfiniteQuery<ConversationsResponse>({
-    queryKey: ['conversations', size],
+    queryKey: ['conversations', activeAccountId, size],
     queryFn: ({ pageParam = 0 }) => api.get(`/api/messages?page=${pageParam}&size=${size}`),
     initialPageParam: 0,
     getNextPageParam: (lastPage) => {
@@ -96,8 +100,9 @@ export function useConversations(size = 25) {
 }
 
 export function useConversation(conversationId: string | null) {
+  const { activeAccountId } = useAccount();
   return useQuery<ConversationDetail & { aiSentTexts?: string[] }>({
-    queryKey: ['conversation', conversationId],
+    queryKey: ['conversation', activeAccountId, conversationId],
     queryFn: () => api.get(`/api/messages/${conversationId}`),
     enabled: !!conversationId,
     retry: false,
@@ -124,8 +129,9 @@ interface ResponderStatus {
 }
 
 export function useResponderStatus() {
+  const { activeAccountId } = useAccount();
   return useQuery<ResponderStatus>({
-    queryKey: ['responder-status'],
+    queryKey: ['responder-status', activeAccountId],
     queryFn: () => api.get('/api/messages/responder'),
     refetchInterval: 10000,
   });
@@ -145,18 +151,19 @@ export function useResponderControl() {
 
 export function useSendMessage() {
   const queryClient = useQueryClient();
+  const { activeAccountId } = useAccount();
   return useMutation({
     mutationFn: ({ conversationId, message }: { conversationId: string; message: string }) =>
       api.post(`/api/messages/${conversationId}`, { message }),
     onMutate: async ({ conversationId, message }) => {
       // Cancel outgoing refetches so they don't overwrite our optimistic update
-      await queryClient.cancelQueries({ queryKey: ['conversation', conversationId] });
+      await queryClient.cancelQueries({ queryKey: ['conversation', activeAccountId, conversationId] });
 
-      const previous = queryClient.getQueryData<ConversationDetail>(['conversation', conversationId]);
+      const previous = queryClient.getQueryData<ConversationDetail>(['conversation', activeAccountId, conversationId]);
 
       // Optimistically add the message
       if (previous) {
-        queryClient.setQueryData<ConversationDetail>(['conversation', conversationId], {
+        queryClient.setQueryData<ConversationDetail>(['conversation', activeAccountId, conversationId], {
           ...previous,
           messages: [
             ...previous.messages,
@@ -177,12 +184,12 @@ export function useSendMessage() {
     onError: (_err, { conversationId }, context) => {
       // Rollback on error
       if (context?.previous) {
-        queryClient.setQueryData(['conversation', conversationId], context.previous);
+        queryClient.setQueryData(['conversation', activeAccountId, conversationId], context.previous);
       }
     },
     onSettled: (_data, _err, { conversationId }) => {
       // Refetch to get the real server state
-      queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['conversation', activeAccountId, conversationId] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
