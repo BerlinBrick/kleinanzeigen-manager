@@ -20,12 +20,12 @@ export interface LibraryPublishPlan {
 
 export function buildLibraryPublishPlan(userWorkspace: string, ad: LibraryAd, accountId?: string | null): LibraryPublishPlan {
   const errors: string[] = [];
-  const selectedAccountId = accountId ?? ad.account_id;
-  const account = selectedAccountId ? getAccountById(userWorkspace, selectedAccountId) : null;
-  if (!account) errors.push('Bitte ein gültiges Kleinanzeigen-Konto zuordnen.');
+  const account = accountId ? getAccountById(userWorkspace, accountId) : null;
+  if (!account) errors.push('Bitte ein gültiges Kleinanzeigen-Konto für diese Veröffentlichung auswählen.');
   const workspace = account ? accountWorkspace(userWorkspace, account) : null;
 
   if (ad.status !== 'ready') errors.push('Die Vorlage muss den Status „Bereit“ haben.');
+  if (ad.kleinanzeigen_id != null) errors.push(`Diese Vorlage wurde bereits als Kleinanzeigen-ID ${ad.kleinanzeigen_id} veröffentlicht und wird nicht erneut veröffentlicht.`);
   if (!ad.title.trim()) errors.push('Titel fehlt.');
   if (!ad.description.trim()) errors.push('Beschreibung fehlt.');
   if (!ad.images.length) errors.push('Mindestens ein Bild ist erforderlich.');

@@ -19,6 +19,11 @@ if (!globalProcs.__jobProcs) {
 }
 export const jobPids: Map<string, number> = globalProcs.__jobProcs;
 
+/** Publish must be restarted only through its owning workflow, which recreates its draft/preflight. */
+export function isJobCommandRepeatable(command: string): boolean {
+  return command.trim().split(/\s+/)[0] !== 'publish';
+}
+
 /**
  * Return copies of jobs with a display-ready `user_label` (the current email)
  * resolved from the frozen workspace id. The id itself stays untouched so
@@ -107,6 +112,7 @@ export function startJob(
   userId: string = '',
   scheduledBy?: string,
   forceVisible: boolean = false,
+  sessionOnly: boolean = false,
 ): Job {
   cleanupJobs();
 
@@ -121,6 +127,7 @@ export function startJob(
     workspace,
     scheduled_by: scheduledBy,
     force_visible: forceVisible || undefined,
+    session_only: sessionOnly || undefined,
   };
 
   jobs.set(jobId, job);

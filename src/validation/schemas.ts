@@ -185,7 +185,6 @@ export const libraryAdSchema = z.object({
   shipping_options: z.array(z.string().min(1).max(100)).max(20).default([]),
   attributes: z.record(z.string().max(200), z.string().max(500)).default({}),
   status: z.enum(['draft', 'ready', 'online']).default('draft'),
-  account_id: z.string().trim().max(100).nullable().optional(),
 }).superRefine((data, ctx) => {
   if (data.shipping_type === 'SHIPPING' && data.shipping_costs == null) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['shipping_costs'], message: 'Versandkosten sind bei Versand erforderlich' });

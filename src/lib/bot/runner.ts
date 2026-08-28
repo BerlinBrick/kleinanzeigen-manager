@@ -24,12 +24,43 @@ const BROWSER_COMMANDS = new Set(['publish', 'verify', 'delete', 'update', 'down
 export const BOT_DIR = process.env.BOT_DIR || process.cwd();
 
 /** Rewrite merged.browser according to browser.mode (headless/auto/visible). */
-export function applyBrowserMode(merged: Record<string, unknown>, workspace: string, attachPort?: number, nativeVisible?: boolean): void {
+export function applyBrowserMode(
+  merged: Record<string, unknown>,
+  workspace: string,
+  attachPort?: number,
+  nativeVisible?: boolean,
+  containerized: boolean = fs.existsSync('/.dockerenv'),
+): void {
   const mode = resolveBrowserMode(merged);
   const browser = (merged.browser ?? {}) as Record<string, unknown>;
-  const baseArguments = Array.isArray(browser.arguments) ? (browser.arguments as string[]) : [];
+  const baseArguments = Array.isArray(browser.arguments) ? [...(browser.arguments as string[])] : [];
+  // Debian Chromium in Docker must not use its sandbox, and upstream nodriver's --test-type
+  // workaround requires CAP_SYS_PTRACE. Our runtime intentionally does not grant that capability;
+  // suppress_unsupported_flag_warning=false tells the bot to omit --test-type instead of dying
+  // with its generic "running as root / no_sandbox=True" connection error.
+  if (containerized && !baseArguments.includes('--no-sandbox')) baseArguments.push('--no-sandbox');
   const built = buildBrowserConfig({ mode, profilePath: loginProfilePath(workspace), attachPort, nativeVisible, baseArguments });
-  merged.browser = { ...browser, ...built };
+  merged.browser = {
+    ...browser,
+    ...built,
+    ...(containerized ? { suppress_unsupported_flag_warning: false } : {}),
+  };
+}
+
+/**
+ * Keep the upstream config schema valid for a publish that was authorized by an
+ * account-bound session preflight. These inert values are schema sentinels only:
+ * authentication continues exclusively through the selected workspace's persisted
+ * cookies and browser profile, and no global/configured credentials are copied in.
+ */
+export function applySessionOnlyLogin(merged: Record<string, unknown>, workspace: string): void {
+  if (!fs.existsSync(path.join(workspace, '.temp', 'login-session.json'))) {
+    throw new Error('Die accountgebundene Kleinanzeigen-Session fehlt.');
+  }
+  merged.login = {
+    username: 'session-only@invalid.local',
+    password: 'session-only',
+  };
 }
 
 const BOT_CMD = process.env.BOT_CMD || path.join(BOT_DIR, 'bot', 'kleinanzeigen-bot');
@@ -189,7 +220,11 @@ export async function runBotCommand(
       let attachPort: number | undefined;
       let nativeVisible = false;
       if (isBrowserCmd) {
-        if (isAttachRun(browserMode, forceVisible)) {
+        const preflightPort = jobs.get(jobId)?.preflight_cdp_port;
+        if (preflightPort !== undefined) {
+          // Session-only publish: attach to the already validated account browser.
+          attachPort = preflightPort;
+        } else if (isAttachRun(browserMode, forceVisible)) {
           // Headless server (Docker, no display): attach to the Xvnc/noVNC browser.
           // Lock stays held — the visible browser persists; a later headless run frees it via stopVncLogin.
           const session = await startVncLogin(workspace);
@@ -206,6 +241,7 @@ export async function runBotCommand(
         }
       }
       applyBrowserMode(merged, workspace, attachPort, nativeVisible);
+      if (jobs.get(jobId)?.session_only) applySessionOnlyLogin(merged, workspace);
       // VNC run = the bot attaches to the visible browser. Let it pause at a login wall
       // (instead of aborting) so the user can sign in / solve the CAPTCHA in the VNC view.
       vncRun = attachPort !== undefined;

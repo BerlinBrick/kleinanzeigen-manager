@@ -1,7 +1,7 @@
 import { handleApiError } from '@/lib/api/error-handler';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/middleware';
-import { jobs, startJob, withUserLabel } from '@/lib/bot/jobs';
+import { isJobCommandRepeatable, jobs, startJob, withUserLabel } from '@/lib/bot/jobs';
 import { readMergedConfig } from '@/lib/yaml/config';
 import { resolveBrowserMode } from '@/lib/bot/browser-mode';
 
@@ -21,6 +21,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
     if (!originalJob) {
       return NextResponse.json({ detail: 'Job not found' }, { status: 404 });
+    }
+
+    if (!isJobCommandRepeatable(originalJob.command)) {
+      return NextResponse.json(
+        { detail: 'Publish-Jobs können aus Sicherheitsgründen nicht wiederholt werden. Bitte die accountgebundene Veröffentlichung erneut aus der Bibliothek starten.' },
+        { status: 409 },
+      );
     }
 
     // Non-admin can only repeat their OWN jobs (parity with cancel/GET) — without this a guessed

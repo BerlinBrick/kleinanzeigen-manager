@@ -24,8 +24,12 @@ interface LibraryRow {
   status: LibraryAdStatus;
   account_id: string | null;
   publish_job_id: string | null;
+  publish_account_id: string | null;
+  publish_account_name: string | null;
   publish_started_at: string | null;
   publish_baseline_ids: string;
+  published_account_id: string | null;
+  published_account_name: string | null;
   kleinanzeigen_id: number | null;
   kleinanzeigen_url: string | null;
   created_at: string;
@@ -62,10 +66,14 @@ function openDatabase(workspace: string): DatabaseSync {
   if (!columns.has('attributes')) db.exec("ALTER TABLE library_ads ADD COLUMN attributes TEXT NOT NULL DEFAULT '{}'");
   if (!columns.has('shipping_options')) db.exec("ALTER TABLE library_ads ADD COLUMN shipping_options TEXT NOT NULL DEFAULT '[]'");
   if (!columns.has('publish_job_id')) db.exec('ALTER TABLE library_ads ADD COLUMN publish_job_id TEXT');
+  if (!columns.has('publish_account_id')) db.exec('ALTER TABLE library_ads ADD COLUMN publish_account_id TEXT');
+  if (!columns.has('publish_account_name')) db.exec('ALTER TABLE library_ads ADD COLUMN publish_account_name TEXT');
   if (!columns.has('publish_started_at')) db.exec('ALTER TABLE library_ads ADD COLUMN publish_started_at TEXT');
   if (!columns.has('publish_baseline_ids')) db.exec("ALTER TABLE library_ads ADD COLUMN publish_baseline_ids TEXT NOT NULL DEFAULT '[]'");
   if (!columns.has('kleinanzeigen_id')) db.exec('ALTER TABLE library_ads ADD COLUMN kleinanzeigen_id INTEGER');
   if (!columns.has('kleinanzeigen_url')) db.exec('ALTER TABLE library_ads ADD COLUMN kleinanzeigen_url TEXT');
+  if (!columns.has('published_account_id')) db.exec('ALTER TABLE library_ads ADD COLUMN published_account_id TEXT');
+  if (!columns.has('published_account_name')) db.exec('ALTER TABLE library_ads ADD COLUMN published_account_name TEXT');
   return db;
 }
 
@@ -93,7 +101,8 @@ function fromRow(row: LibraryRow): LibraryAd {
     const parsed = JSON.parse(row.publish_baseline_ids || '[]') as unknown;
     if (Array.isArray(parsed)) publishBaselineIds = parsed.filter((item): item is number => typeof item === 'number' && Number.isInteger(item));
   } catch { /* invalid legacy value → empty list */ }
-  return { ...rest, images, attributes, shipping_options: shippingOptions, publish_baseline_ids: publishBaselineIds, location_override: location || null };
+  const { account_id: _legacyAccountId, ...accountIndependent } = rest;
+  return { ...accountIndependent, images, attributes, shipping_options: shippingOptions, publish_baseline_ids: publishBaselineIds, location_override: location || null };
 }
 
 export function libraryImagesDir(workspace: string, id: string): string {
@@ -141,8 +150,8 @@ export function createLibraryAd(workspace: string, input: LibraryAdInput): Libra
     const now = new Date().toISOString();
     db.prepare(`INSERT INTO library_ads
       (id, title, description, price, price_type, category, location, shipping_type, shipping_costs, shipping_options, attributes, images, status, account_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?)`)
-      .run(id, input.title, input.description, input.price, input.price_type, input.category, input.location_override ?? '', input.shipping_type, input.shipping_costs ?? null, JSON.stringify(input.shipping_options ?? []), JSON.stringify(input.attributes ?? {}), input.status, input.account_id ?? null, now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, NULL, ?, ?)`)
+      .run(id, input.title, input.description, input.price, input.price_type, input.category, input.location_override ?? '', input.shipping_type, input.shipping_costs ?? null, JSON.stringify(input.shipping_options ?? []), JSON.stringify(input.attributes ?? {}), input.status, now, now);
     return fromRow(db.prepare('SELECT * FROM library_ads WHERE id = ?').get(id) as unknown as LibraryRow);
   } finally {
     db.close();
@@ -154,8 +163,8 @@ export function updateLibraryAd(workspace: string, id: string, input: LibraryAdI
   try {
     const result = db.prepare(`UPDATE library_ads SET
       title = ?, description = ?, price = ?, price_type = ?, category = ?, location = ?,
-      shipping_type = ?, shipping_costs = ?, shipping_options = ?, attributes = ?, status = ?, account_id = ?, updated_at = ? WHERE id = ?`)
-      .run(input.title, input.description, input.price, input.price_type, input.category, input.location_override ?? '', input.shipping_type, input.shipping_costs ?? null, JSON.stringify(input.shipping_options ?? []), JSON.stringify(input.attributes ?? {}), input.status, input.account_id ?? null, new Date().toISOString(), id);
+      shipping_type = ?, shipping_costs = ?, shipping_options = ?, attributes = ?, status = ?, account_id = NULL, updated_at = ? WHERE id = ?`)
+      .run(input.title, input.description, input.price, input.price_type, input.category, input.location_override ?? '', input.shipping_type, input.shipping_costs ?? null, JSON.stringify(input.shipping_options ?? []), JSON.stringify(input.attributes ?? {}), input.status, new Date().toISOString(), id);
     if (result.changes === 0) return null;
     return fromRow(db.prepare('SELECT * FROM library_ads WHERE id = ?').get(id) as unknown as LibraryRow);
   } finally {
@@ -190,7 +199,6 @@ export function duplicateLibraryAd(workspace: string, id: string): LibraryAd | n
     shipping_options: source.shipping_options,
     attributes: source.attributes,
     status: 'draft',
-    account_id: source.account_id,
   });
   if (source.images.length) {
     const sourceDir = libraryImagesDir(workspace, source.id);
@@ -214,21 +222,23 @@ export function setLibraryPublishJob(
   jobId: string | null,
   baselineIds: number[] = [],
   startedAt: string | null = jobId ? new Date().toISOString() : null,
+  accountId: string | null = null,
+  accountName: string | null = null,
 ): LibraryAd | null {
   const db = openDatabase(workspace);
   try {
-    const result = db.prepare('UPDATE library_ads SET publish_job_id = ?, publish_started_at = ?, publish_baseline_ids = ?, updated_at = ? WHERE id = ?')
-      .run(jobId, startedAt, JSON.stringify(baselineIds), new Date().toISOString(), id);
+    const result = db.prepare('UPDATE library_ads SET publish_job_id = ?, publish_started_at = ?, publish_baseline_ids = ?, publish_account_id = ?, publish_account_name = ?, updated_at = ? WHERE id = ?')
+      .run(jobId, startedAt, JSON.stringify(baselineIds), accountId, accountName, new Date().toISOString(), id);
     if (result.changes === 0) return null;
     return fromRow(db.prepare('SELECT * FROM library_ads WHERE id = ?').get(id) as unknown as LibraryRow);
   } finally { db.close(); }
 }
 
-export function markLibraryAdOnline(workspace: string, id: string, kleinanzeigenId: number, url: string): LibraryAd | null {
+export function markLibraryAdOnline(workspace: string, id: string, kleinanzeigenId: number, url: string, accountId: string, accountName: string): LibraryAd | null {
   const db = openDatabase(workspace);
   try {
-    const result = db.prepare("UPDATE library_ads SET status = 'online', kleinanzeigen_id = ?, kleinanzeigen_url = ?, updated_at = ? WHERE id = ?")
-      .run(kleinanzeigenId, url, new Date().toISOString(), id);
+    const result = db.prepare("UPDATE library_ads SET status = 'online', kleinanzeigen_id = ?, kleinanzeigen_url = ?, published_account_id = ?, published_account_name = ?, publish_account_id = NULL, publish_account_name = NULL, updated_at = ? WHERE id = ?")
+      .run(kleinanzeigenId, url, accountId, accountName, new Date().toISOString(), id);
     if (result.changes === 0) return null;
     return fromRow(db.prepare('SELECT * FROM library_ads WHERE id = ?').get(id) as unknown as LibraryRow);
   } finally { db.close(); }

@@ -32,13 +32,15 @@ export function Modal({
 }: ModalProps): ReactElement | null {
   const contentRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   // Handle Escape key
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     },
-    [onClose],
+    [],
   );
 
   // Focus trap

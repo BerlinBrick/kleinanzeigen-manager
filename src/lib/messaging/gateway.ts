@@ -5,12 +5,13 @@ import WebSocket from 'ws';
 import yaml from 'js-yaml';
 import type { ConversationsResponse, ConversationDetail } from '@/types/message';
 import { startResponder } from './responder';
-import { ensureProfileFreeForLaunch, detectBrowserBin, killOrphanedChromium, cleanBrowserProfile } from '@/lib/bot/browser-cleanup';
+import { ensureProfileFreeForLaunch, detectBrowserBin, killOrphanedChromium, cleanBrowserProfile, cleanStaleLocks } from '@/lib/bot/browser-cleanup';
 import {
   createCdpClient,
   sleep,
   waitForCondition,
   extractCookiesFromCDP,
+  setKleinanzeigenCookiesFromHeader,
   waitForCdp,
   openPageSocket,
 } from '@/lib/browser/cdp';
@@ -178,11 +179,11 @@ export function isAccessTokenExpired(cookies: string): boolean {
  */
 export async function ensureSession(
   workspace: string,
-  opts: { cookieOnly?: boolean } = {},
+  opts: { cookieOnly?: boolean; browserBacked?: boolean } = {},
 ): Promise<BrowserSession> {
   const hasAccountSession = fs.existsSync(path.join(workspace, COOKIE_FILE));
   const existing = g.__msgSessions!.get(workspace);
-  if (existing && existing.status === 'ready') {
+  if (existing && existing.status === 'ready' && (!opts.browserBacked || existing.proc)) {
     // Refresh cookies every 30 minutes (sessions are long-lived)
     if (Date.now() - existing.lastCookieRefresh > 30 * 60 * 1000) {
       try {
@@ -213,7 +214,7 @@ export async function ensureSession(
 
   // Browserless mode: bot is using the shared profile, return session as-is
   // API calls continue with cached cookies — never launch a browser here
-  if (existing && existing.status === 'browserless') {
+  if (existing && existing.status === 'browserless' && !opts.browserBacked) {
     return existing;
   }
 
@@ -236,7 +237,7 @@ export async function ensureSession(
   }
 
   // Try disk cookies before launching a browser (API-only mode)
-  if (!existing || existing.status === 'error') {
+  if ((!existing || existing.status === 'error') && !opts.browserBacked) {
     const persisted = loadCookiesFromDisk(workspace);
     if (persisted) {
       const userId = await fetchUserId(persisted.cookies);
@@ -316,6 +317,25 @@ export async function ensureSession(
     throw new Error('Keine gültige Session — Login erforderlich');
   }
 
+  // A queued/running bot owns the shared profile. Keep messaging browserless instead of
+  // racing a second Chromium launch into the same account-bound user-data-dir.
+  const { isQueueBusy } = await import('@/lib/bot/queue');
+  if (isQueueBusy() && !opts.browserBacked) {
+    const browserless: BrowserSession = existing ?? {
+      proc: null,
+      cdpPort: getCdpPort(workspace),
+      cookies: '',
+      userId: null,
+      lastCookieRefresh: 0,
+      status: 'browserless',
+      startedAt: Date.now(),
+    };
+    browserless.status = 'browserless';
+    browserless.error = undefined;
+    g.__msgSessions!.set(workspace, browserless);
+    return browserless;
+  }
+
   // Clean up old session — SIGKILL for immediate death, same reason as stopForBot
   if (existing?.proc) {
     try { existing.proc.kill('SIGKILL'); } catch { /* fine */ }
@@ -379,6 +399,13 @@ export async function ensureSession(
 
     // Network.getAllCookies works on about:blank — no navigation needed
     await sleep(500);
+    // Management API and messaging may have refreshed the account session in
+    // login-session.json while no browser was running. Put that exact selected-account
+    // session into the exact selected-account profile before checking browser login.
+    const persisted = loadCookiesFromDisk(workspace);
+    if (persisted?.cookies) {
+      await setKleinanzeigenCookiesFromHeader(session.cdpPort, persisted.cookies);
+    }
     let cookies = await extractCookiesFromCDP(session.cdpPort);
     let userId = await fetchUserId(cookies);
 
@@ -504,6 +531,15 @@ export async function ensureSession(
   }
 }
 
+/** Ensure the selected account's persisted session is live in its own Chromium profile. */
+export async function prepareAccountProfileForBot(workspace: string): Promise<number> {
+  const session = await ensureSession(workspace, { browserBacked: true });
+  if (session.status !== 'ready' || !session.userId) {
+    throw new Error('Die accountgebundene Session konnte im Publish-Browserprofil nicht bestätigt werden.');
+  }
+  return session.cdpPort;
+}
+
 /**
  * Stop the persistent browser session (used for auth errors / manual stop).
  */
@@ -531,7 +567,8 @@ export async function stopForBot(workspace: string): Promise<void> {
     // No tracked session — but orphaned chromium might still be running
     // (e.g. after server restart where session tracking was lost)
     await killOrphanedChromium(workspace);
-    cleanBrowserProfile(workspace);
+    // Routine handoff removes IPC locks only; session restore, cookies and caches stay intact.
+    cleanStaleLocks(workspace);
     return;
   }
 
@@ -546,9 +583,23 @@ export async function stopForBot(workspace: string): Promise<void> {
   // catching all Chromium helper processes (GPU, utility, renderer)
   if (session.proc) {
     const pid = session.proc.pid;
+    const proc = session.proc;
+    // Snapshot the validated browser cookies before shutdown. More importantly, give
+    // Chromium a normal termination window so Network.setCookies and session state are
+    // flushed into this account's profile before the bot opens it.
+    try {
+      const cookies = await extractCookiesFromCDP(session.cdpPort);
+      if (cookies && session.userId) saveCookiesToDisk(workspace, cookies, session.userId);
+    } catch { /* the browser may already be gone */ }
+
+    try { proc.kill('SIGTERM'); } catch { /* already gone */ }
+    await Promise.race([
+      new Promise<void>(resolve => proc.once('exit', () => resolve())),
+      sleep(3000),
+    ]);
     session.proc = null;
 
-    if (pid) {
+    if (pid && proc.exitCode === null && proc.signalCode === null) {
       try { process.kill(-pid, 'SIGKILL'); } catch { /* group already gone */ }
     }
   }
@@ -556,8 +607,9 @@ export async function stopForBot(workspace: string): Promise<void> {
   // Fallback: kill any remaining orphaned chromium using this profile
   await killOrphanedChromium(workspace);
 
-  // Remove stale lock files so the bot's browser can acquire the profile
-  cleanBrowserProfile(workspace);
+  // Remove stale IPC locks only so the bot can acquire the profile without discarding
+  // the account's warm browser state.
+  cleanStaleLocks(workspace);
 
   // Preserve cookies in RAM, downgrade to browserless
   session.status = 'browserless';

@@ -22,6 +22,11 @@ export interface Job {
   // configured mode. Set on the AUTO-mode retry after a login_required job so the user can
   // sign in live; a normal AUTO job stays headless.
   force_visible?: boolean;
+  // Library publishes that have already passed account-session preflight must use that
+  // account's persisted session/profile, never legacy login credentials from config.yaml.
+  session_only?: boolean;
+  /** Live account-profile browser validated immediately before a session-only publish. */
+  preflight_cdp_port?: number;
   cdp_port?: number;
   queue_position?: number;
   scheduled_by?: string;

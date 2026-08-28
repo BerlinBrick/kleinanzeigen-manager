@@ -32,8 +32,16 @@ export async function POST(request: NextRequest, { params }: Context) {
 
     prepareLibraryDraft(user.userWorkspace, ad, plan);
     try {
-      const job = startJob('publish --ads=new', plan.workspace!, user.id);
-      setLibraryPublishJob(user.userWorkspace, ad.id, job.job_id, onlineBefore.map((item) => item.id), job.started_at);
+      const job = startJob('publish --ads=new', plan.workspace!, user.id, undefined, false, true);
+      setLibraryPublishJob(
+        user.userWorkspace,
+        ad.id,
+        job.job_id,
+        onlineBefore.map((item) => item.id),
+        job.started_at,
+        plan.accountId,
+        plan.accountName,
+      );
       return NextResponse.json({ ready: true, job: withUserLabel(job) }, { status: 202 });
     } catch (error) {
       cleanupFailedLibraryDraft(plan.workspace!, ad.id);
@@ -77,7 +85,17 @@ export async function GET(request: NextRequest, { params }: Context) {
       }
       const rawUrl = online?.seoUrl;
       const url = rawUrl ? (rawUrl.startsWith('http') ? rawUrl : `https://www.kleinanzeigen.de${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`) : `https://www.kleinanzeigen.de/s-anzeige/${publishedId}`;
-      const updated = markLibraryAdOnline(user.userWorkspace, ad.id, publishedId, url) ?? ad;
+      if (!ad.publish_account_id || !ad.publish_account_name) {
+        return NextResponse.json({ job: withUserLabel(job), ad, error: 'Das Zielkonto des Veröffentlichungsauftrags fehlt; keine automatische Zuordnung vorgenommen.' });
+      }
+      const updated = markLibraryAdOnline(
+        user.userWorkspace,
+        ad.id,
+        publishedId,
+        url,
+        ad.publish_account_id,
+        ad.publish_account_name,
+      ) ?? ad;
       return NextResponse.json({ job: withUserLabel(job), ad: updated, recovered_after_submit: !published });
     }
     return NextResponse.json({ job: withUserLabel(job), ad });

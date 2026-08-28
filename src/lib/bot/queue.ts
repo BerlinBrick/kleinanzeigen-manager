@@ -1,7 +1,7 @@
 import { jobs, cancelJob } from '@/lib/bot/jobs';
 import { runBotCommand, hasBrowserConnectionError } from '@/lib/bot/runner';
 import { onJobStarting, onJobCompleted } from '@/lib/bot/hooks';
-import { stopForBot, restartAllBrowserless } from '@/lib/messaging/gateway';
+import { prepareAccountProfileForBot, stopForBot, restartAllBrowserless } from '@/lib/messaging/gateway';
 import { ensureProfileFreeForLaunch, getProfileHolderPids } from '@/lib/bot/browser-cleanup';
 import { readMergedConfig } from '@/lib/yaml/config';
 import { resolveBrowserMode, isAttachRun } from '@/lib/bot/browser-mode';
@@ -23,6 +23,11 @@ const MAX_PROFILE_RETRIES = 1; // one delayed re-queue on top of the 2 in-place 
 // Splitting on it isolates the LAST attempt's error, so retry decisions aren't tripped by an
 // earlier attempt's (now-irrelevant) "Failed to connect" text still sitting in the accumulated log.
 const PREVIOUS_ATTEMPT_MARKER = '\n\n--- [Vorheriger Versuch] ---';
+
+/** Publish can have crossed the submit boundary before a browser disconnect is reported. */
+export function allowsAutomaticBrowserRetry(command: string): boolean {
+  return command.trim().split(/\s+/)[0] !== 'publish';
+}
 
 interface QueueEntry {
   jobId: string;
@@ -204,6 +209,14 @@ async function executeAndAdvance(jobId: string, command: string, workspace: stri
       job?.force_visible ?? false,
     );
 
+    if (job?.session_only) {
+      // Keep the validated account browser alive and let the Python bot attach to
+      // that exact process/profile. Closing and relaunching loses session cookies
+      // whose persisted header has no Chromium expiry metadata.
+      job.preflight_cdp_port = await prepareAccountProfileForBot(workspace);
+      attachMode = true;
+    }
+
     if (!attachMode) {
       // Bot launches its own browser → it has absolute priority on the shared profile.
       await stopForBot(workspace);
@@ -226,6 +239,9 @@ async function executeAndAdvance(jobId: string, command: string, workspace: stri
         console.warn(`[Queue] ${diag}: ${workspace}`);
         const jobRef = jobs.get(jobId);
         if (jobRef) jobRef.output += `${diag}\n`;
+        if (!allowsAutomaticBrowserRetry(command)) {
+          throw new Error('Browser-Profil nicht eindeutig frei; Veröffentlichung wurde nicht gestartet.');
+        }
       }
     }
 
@@ -236,7 +252,8 @@ async function executeAndAdvance(jobId: string, command: string, workspace: stri
     // Matches user behaviour: a manual retry always works after a clean profile wipe.
     // Skipped in attach mode: the wipe would kill the VNC browser the bot attaches to,
     // turning a transient hiccup into a guaranteed failure.
-    if (!attachMode && job && job.status === 'failed' && hasBrowserConnectionError(job.output)) {
+    if (!attachMode && job && job.status === 'failed' && hasBrowserConnectionError(job.output)
+      && allowsAutomaticBrowserRetry(command)) {
       const originalError = job.output;
 
       job.status = 'running';
@@ -259,7 +276,8 @@ async function executeAndAdvance(jobId: string, command: string, workspace: stri
       if (retried?.status === 'failed') {
         retried.output += `${PREVIOUS_ATTEMPT_MARKER}\n${originalError}`;
       }
-    } else if (attachMode && job && job.status === 'failed' && hasBrowserConnectionError(job.output)) {
+    } else if (attachMode && job && job.status === 'failed' && hasBrowserConnectionError(job.output)
+      && allowsAutomaticBrowserRetry(command)) {
       // Attach run hit a transient CDP connect race (VNC browser briefly unreachable, e.g.
       // mid-startup). Retry ONCE WITHOUT touching the profile — runBotCommand re-calls
       // startVncLogin (idempotent; revives the VNC browser if needed). A profile wipe here
@@ -307,8 +325,14 @@ async function executeAndAdvance(jobId: string, command: string, workspace: stri
     const lastAttemptOutput = finalJob?.output.split(PREVIOUS_ATTEMPT_MARKER)[0] ?? '';
     if (!attachMode && finalJob && finalJob.status === 'failed'
       && hasBrowserConnectionError(lastAttemptOutput)
+      && allowsAutomaticBrowserRetry(command)
       && (finalJob.retry_count ?? 0) < MAX_PROFILE_RETRIES) {
       scheduleProfileRetry(finalJob, command, workspace);
+    }
+
+    if (job?.preflight_cdp_port !== undefined) {
+      try { await stopForBot(workspace); } catch { /* queue cleanup must still advance */ }
+      job.preflight_cdp_port = undefined;
     }
 
     processNext();

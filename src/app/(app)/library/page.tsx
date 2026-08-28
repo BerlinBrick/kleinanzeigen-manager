@@ -16,10 +16,10 @@ const STATUS_LABELS: Record<LibraryAdStatus, string> = {
 
 const EMPTY_FORM: LibraryAdInput = {
   title: '', description: '', price: 0, price_type: 'NEGOTIABLE', category: '', location_override: null,
-  shipping_type: 'PICKUP', shipping_costs: null, shipping_options: [], attributes: {}, status: 'draft', account_id: null,
+  shipping_type: 'PICKUP', shipping_costs: null, shipping_options: [], attributes: {}, status: 'draft',
 };
 
-interface AccountOption { id: string; display_name: string }
+interface AccountOption { id: string; display_name: string; login_status: string }
 
 export default function LibraryPage() {
   const { toast } = useToast();
@@ -141,7 +141,7 @@ export default function LibraryPage() {
       ) : (
         <div className={view === 'grid' ? styles.grid : styles.list}>
           {filtered.map((ad) => (
-            <LibraryCard key={ad.id} ad={ad} accountName={accounts.find((account) => account.id === ad.account_id)?.display_name} list={view === 'list'} publishState={publishJobs[ad.id]} onEdit={() => setEditing(ad)} onDuplicate={() => void duplicate(ad)} onDelete={() => void remove(ad)} onPublish={() => setPublishChoice({ ad, accountId: ad.account_id ?? accounts[0]?.id ?? '' })} />
+            <LibraryCard key={ad.id} ad={ad} list={view === 'list'} publishState={publishJobs[ad.id]} onEdit={() => setEditing(ad)} onDuplicate={() => void duplicate(ad)} onDelete={() => void remove(ad)} onPublish={() => setPublishChoice({ ad, accountId: '' })} />
           ))}
         </div>
       )}
@@ -153,15 +153,16 @@ export default function LibraryPage() {
           footer={<><Button variant="ghost" onClick={() => setPublishChoice(null)}>Abbrechen</Button><Button variant="primary" disabled={!publishChoice.accountId} onClick={() => { const choice = publishChoice; setPublishChoice(null); void publish(choice.ad, choice.accountId); }}>Weiter zum Preflight</Button></>}
         >
           <p>Die Vorlage bleibt unverändert. Diese Auswahl gilt nur für den nächsten Veröffentlichungsauftrag.</p>
-          <label><span>Kleinanzeigen-Konto</span><select value={publishChoice.accountId} onChange={(event) => setPublishChoice((current) => current ? { ...current, accountId: event.target.value } : null)}><option value="">Bitte auswählen</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.display_name}</option>)}</select></label>
+          <label><span>Kleinanzeigen-Konto</span><select value={publishChoice.accountId} onChange={(event) => setPublishChoice((current) => current ? { ...current, accountId: event.target.value } : null)}><option value="">Bitte auswählen</option>{accounts.map((account) => <option key={account.id} value={account.id} disabled={account.login_status !== 'connected'}>{account.display_name}{account.login_status === 'connected' ? '' : ' — nicht verbunden'}</option>)}</select></label>
+          {accounts.some((account) => account.login_status !== 'connected') && <p>Nicht verbundene Konten müssen vor einer Veröffentlichung verbunden werden.</p>}
         </Modal>
       )}
     </div>
   );
 }
 
-function LibraryCard({ ad, accountName, list, publishState, onEdit, onDuplicate, onDelete, onPublish }: {
-  ad: LibraryAd; accountName?: string; list: boolean; publishState?: { status: JobStatus; error?: string }; onEdit: () => void; onDuplicate: () => void; onDelete: () => void; onPublish: () => void;
+function LibraryCard({ ad, list, publishState, onEdit, onDuplicate, onDelete, onPublish }: {
+  ad: LibraryAd; list: boolean; publishState?: { status: JobStatus; error?: string }; onEdit: () => void; onDuplicate: () => void; onDelete: () => void; onPublish: () => void;
 }) {
   return (
     <article className={`${styles.card} ${list ? styles.cardList : ''}`}>
@@ -175,7 +176,7 @@ function LibraryCard({ ad, accountName, list, publishState, onEdit, onDuplicate,
         <div className={styles.cardTop}><span className={`${styles.status} ${styles[ad.status]}`}>{STATUS_LABELS[ad.status]}</span><strong>{ad.price.toLocaleString('de-DE')} €</strong></div>
         <h3>{ad.title}</h3>
         <p>{ad.description}</p>
-        <div className={styles.meta}><span>{ad.category}</span><span>{accountName ? `Konto: ${accountName}` : 'Kein Konto fest zugeordnet'}</span><span>{ad.location_override || 'Standort vom Konto'}</span><span>{ad.shipping_type === 'SHIPPING' ? `Versand ${ad.shipping_costs?.toLocaleString('de-DE') ?? '0'} €` : 'Nur Abholung'}</span><span>Geändert {new Date(ad.updated_at).toLocaleDateString('de-DE')}</span></div>
+        <div className={styles.meta}><span>{ad.category}</span><span>{ad.published_account_name ? `Veröffentlicht über: ${ad.published_account_name}` : 'Zielkonto wird beim Veröffentlichen gewählt'}</span><span>{ad.location_override || 'Standort vom Zielkonto'}</span><span>{ad.shipping_type === 'SHIPPING' ? `Versand ${ad.shipping_costs?.toLocaleString('de-DE') ?? '0'} €` : 'Nur Abholung'}</span><span>Geändert {new Date(ad.updated_at).toLocaleDateString('de-DE')}</span></div>
         {publishState && <div className={styles.jobState}>Posting-Job: {publishState.status}{publishState.error ? ` · ${publishState.error}` : ''}</div>}
         {ad.kleinanzeigen_id && <a className={styles.onlineLink} href={ad.kleinanzeigen_url ?? '#'} target="_blank" rel="noreferrer">Kleinanzeigen-ID {ad.kleinanzeigen_id} öffnen</a>}
         <div className={styles.actions}>
@@ -194,17 +195,12 @@ function LibraryForm({ ad, onCancel, onSaved }: { ad?: LibraryAd; onCancel: () =
   const [form, setForm] = useState<LibraryAdInput>(ad ? {
     title: ad.title, description: ad.description, price: ad.price, price_type: ad.price_type,
     category: ad.category, location_override: ad.location_override, shipping_type: ad.shipping_type,
-    shipping_costs: ad.shipping_costs, shipping_options: ad.shipping_options, attributes: ad.attributes, status: ad.status, account_id: ad.account_id,
+    shipping_costs: ad.shipping_costs, shipping_options: ad.shipping_options, attributes: ad.attributes, status: ad.status,
   } : EMPTY_FORM);
   const [images, setImages] = useState(ad?.images ?? []);
   const [files, setFiles] = useState<File[]>([]);
-  const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [saving, setSaving] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
-
-  useEffect(() => {
-    api.get<{ accounts: AccountOption[] }>('/api/accounts').then((result) => setAccounts(result.accounts ?? [])).catch(() => {});
-  }, []);
 
   const set = <K extends keyof LibraryAdInput>(key: K, value: LibraryAdInput[K]) => setForm((current) => ({ ...current, [key]: value }));
 
@@ -264,12 +260,11 @@ function LibraryForm({ ad, onCancel, onSaved }: { ad?: LibraryAd; onCancel: () =
         <Input label="Titel" value={form.title} onChange={(e) => set('title', e.target.value)} required maxLength={65} />
         <label><span>Preisart *</span><select required value={form.price_type} onChange={(e) => { const value = e.target.value as LibraryAdInput['price_type']; set('price_type', value); if (value === 'GIVE_AWAY') set('price', 0); }}><option value="FIXED">Festpreis</option><option value="NEGOTIABLE">VB</option><option value="GIVE_AWAY">Zu verschenken</option></select></label>
         <Input label="Preis (€)" type="number" min="0" step="0.01" value={String(form.price)} onChange={(e) => set('price', Number(e.target.value))} required disabled={form.price_type === 'GIVE_AWAY'} />
-        <Input label="Standort-Override (optional)" value={form.location_override ?? ''} onChange={(e) => set('location_override', e.target.value || null)} hint="Leer lassen, um den Standort des zugeordneten Kontos zu verwenden." />
+        <Input label="Standort-Override (optional)" value={form.location_override ?? ''} onChange={(e) => set('location_override', e.target.value || null)} hint="Leer lassen, um beim Veröffentlichen den Standort des Zielkontos zu verwenden." />
         <label><span>Versandoption *</span><select required value={form.shipping_type} onChange={(e) => { const value = e.target.value as LibraryAdInput['shipping_type']; set('shipping_type', value); if (value === 'PICKUP') { set('shipping_costs', null); set('shipping_options', []); } }}><option value="PICKUP">Nur Abholung</option><option value="SHIPPING">Versand möglich</option></select></label>
         {form.shipping_type === 'SHIPPING' && <Input label="Versandkosten (€)" type="number" min="0" step="0.01" value={form.shipping_costs == null ? '' : String(form.shipping_costs)} onChange={(e) => set('shipping_costs', e.target.value === '' ? null : Number(e.target.value))} required error={showErrors && form.shipping_costs == null ? 'Pflichtfeld' : undefined} />}
         {form.shipping_type === 'SHIPPING' && <div className={styles.shippingOptions}><span>Paketoptionen *</span>{SHIPPING_SIZES.map((size) => <fieldset key={size.id}><legend>{size.label}</legend>{size.carriers.map((carrier) => <label key={carrier.value}><input type="checkbox" checked={(form.shipping_options ?? []).includes(carrier.value)} onChange={(event) => set('shipping_options', event.target.checked ? [...(form.shipping_options ?? []), carrier.value] : (form.shipping_options ?? []).filter((value) => value !== carrier.value))} /> <span>{carrier.name} · {carrier.price}</span></label>)}</fieldset>)}{showErrors && !(form.shipping_options ?? []).length && <small>Bitte mindestens eine Versandoption auswählen.</small>}</div>}
         <label><span>Status</span><select value={form.status} onChange={(e) => set('status', e.target.value as LibraryAdStatus)}><option value="draft">Entwurf</option><option value="ready">Bereit</option><option value="online">Online</option></select></label>
-        <label><span>Kleinanzeigen-Konto (optional)</span><select value={form.account_id ?? ''} onChange={(e) => set('account_id', e.target.value || null)}><option value="">Nicht zugeordnet</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.display_name}</option>)}</select></label>
         <div className={styles.categoryField}><LibraryCategoryPicker value={form.category} onChange={(category) => { set('category', category); set('attributes', {}); }} error={showErrors && !form.category ? 'Bitte eine Endkategorie auswählen' : undefined} /></div>
         <LibraryCategoryAttributes category={form.category} values={form.attributes ?? {}} onChange={(attributes) => set('attributes', attributes)} showErrors={showErrors} />
       </div>

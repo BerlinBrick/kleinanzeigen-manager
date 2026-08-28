@@ -7,6 +7,7 @@ import { buildLibraryPublishPlan, prepareLibraryDraft, reconcilePublishedLibrary
 import { readAd } from '@/lib/yaml/ads';
 import { accountWorkspace, createAccount } from '@/lib/accounts/accounts';
 import { writeConfig } from '@/lib/yaml/config';
+import { applyBrowserMode, applySessionOnlyLogin } from '@/lib/bot/runner';
 
 describe('library publish bridge', () => {
   let workspace: string;
@@ -23,14 +24,14 @@ describe('library publish bridge', () => {
       title: 'Vorbereitete Anzeige', description: 'Eine vollständige Beschreibung für das Posting.',
       price: 25, price_type: 'NEGOTIABLE', category: '297/288', location_override: null,
       shipping_type: 'SHIPPING', shipping_costs: 6.19, shipping_options: ['DHL_2'],
-      attributes: {}, status: 'ready', account_id: 'default',
+      attributes: {}, status: 'ready',
     });
     const imageDir = libraryImagesDir(workspace, ad.id);
     fs.mkdirSync(imageDir, { recursive: true });
     fs.writeFileSync(path.join(imageDir, 'bild.jpg'), 'image');
     const withImage = { ...ad, images: ['bild.jpg'] };
 
-    const plan = buildLibraryPublishPlan(workspace, withImage);
+    const plan = buildLibraryPublishPlan(workspace, withImage, 'default');
     expect(plan.ready).toBe(true);
     expect(plan.adData).toMatchObject({
       title: ad.title, description: ad.description, price: 25, price_type: 'NEGOTIABLE',
@@ -42,7 +43,7 @@ describe('library publish bridge', () => {
     expect(fs.existsSync(path.join(path.dirname(file), 'bild.jpg'))).toBe(true);
   });
 
-  it('can override the stored account for one publish without changing the template', () => {
+  it('routes one publish to the selected account without binding the template', () => {
     const second = createAccount(workspace, 'Konto Zwei');
     const secondWorkspace = accountWorkspace(workspace, second);
     fs.mkdirSync(path.join(secondWorkspace, '.temp'), { recursive: true });
@@ -54,7 +55,7 @@ describe('library publish bridge', () => {
     const ad = createLibraryAd(workspace, {
       title: 'Vorbereitete Anzeige', description: 'Eine vollständige Beschreibung für das Posting.',
       price: 25, price_type: 'NEGOTIABLE', category: '297/288', location_override: null,
-      shipping_type: 'PICKUP', shipping_options: [], attributes: {}, status: 'ready', account_id: 'default',
+      shipping_type: 'PICKUP', shipping_options: [], attributes: {}, status: 'ready',
     });
     fs.mkdirSync(libraryImagesDir(workspace, ad.id), { recursive: true });
     fs.writeFileSync(path.join(libraryImagesDir(workspace, ad.id), 'photo.jpg'), 'image');
@@ -65,7 +66,20 @@ describe('library publish bridge', () => {
     expect(plan.accountId).toBe(second.id);
     expect(plan.workspace).toBe(secondWorkspace);
     expect(plan.workspace).not.toBe(workspace);
-    expect(getLibraryAd(workspace, ad.id)?.account_id).toBe('default');
+    expect(getLibraryAd(workspace, ad.id)?.published_account_id).toBeNull();
+
+    const runnerConfig: Record<string, unknown> = {
+      login: { username: '', password: '' },
+      browser: { mode: 'auto', arguments: [] },
+    };
+    applyBrowserMode(runnerConfig, plan.workspace!, undefined, undefined, true);
+    applySessionOnlyLogin(runnerConfig, plan.workspace!);
+    expect((runnerConfig.browser as Record<string, unknown>).user_data_dir)
+      .toBe(path.join(secondWorkspace, '.temp', 'browser-profile'));
+    expect(runnerConfig.login).toEqual({
+      username: 'session-only@invalid.local',
+      password: 'session-only',
+    });
   });
 
   it('blocks missing sessions, images and account contact fields', () => {
@@ -74,15 +88,29 @@ describe('library publish bridge', () => {
     const ad = createLibraryAd(workspace, {
       title: 'Unvollständige Anzeige', description: 'Eine ausreichend lange Beschreibung.',
       price: 10, price_type: 'FIXED', category: '297/288', location_override: null,
-      shipping_type: 'PICKUP', shipping_options: [], attributes: {}, status: 'ready', account_id: 'default',
+      shipping_type: 'PICKUP', shipping_options: [], attributes: {}, status: 'ready',
     });
-    const plan = buildLibraryPublishPlan(workspace, ad);
+    const plan = buildLibraryPublishPlan(workspace, ad, 'default');
     expect(plan.ready).toBe(false);
     expect(plan.errors.join(' ')).toContain('Session');
     expect(plan.errors.join(' ')).toContain('Bild');
     expect(plan.errors.join(' ')).toContain('Kontaktname');
     expect(plan.errors.join(' ')).toContain('Postleitzahl');
     expect(plan.errors.join(' ')).toContain('Standort');
+  });
+
+  it('blocks an already published template even when its status is changed back to ready', () => {
+    const ad = createLibraryAd(workspace, {
+      title: 'Legosteine 200 Stück', description: 'Bereits veröffentlichte und geschützte Vorlage.',
+      price: 31, price_type: 'NEGOTIABLE', category: '297/288', location_override: null,
+      shipping_type: 'PICKUP', shipping_options: [], attributes: {}, status: 'ready',
+    });
+    const published = { ...ad, kleinanzeigen_id: 3496141302 };
+
+    const plan = buildLibraryPublishPlan(workspace, published, 'default');
+
+    expect(plan.ready).toBe(false);
+    expect(plan.errors.join(' ')).toContain('3496141302');
   });
 
   it('reconciles only a new management ad with matching title and price', () => {

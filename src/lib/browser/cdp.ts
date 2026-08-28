@@ -249,3 +249,36 @@ export async function extractCookiesFromCDP(port: number): Promise<string> {
     try { ws.close(); } catch { /* fine */ }
   }
 }
+
+/**
+ * Hydrate the selected account browser with its persisted HTTP session.
+ * login-session.json stores the Cookie request header (not cookie metadata), so
+ * bind every entry to the exact Kleinanzeigen origin. CDP then applies the normal
+ * domain/path rules and Chromium persists the resulting cookies in this profile.
+ */
+export async function setKleinanzeigenCookiesFromHeader(port: number, header: string): Promise<void> {
+  const cookies = header.split(';')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(part => {
+      const separator = part.indexOf('=');
+      if (separator <= 0) return null;
+      return {
+        name: part.slice(0, separator),
+        value: part.slice(separator + 1),
+        url: 'https://www.kleinanzeigen.de/',
+        secure: true,
+      };
+    })
+    .filter((cookie): cookie is { name: string; value: string; url: string; secure: boolean } => cookie !== null);
+
+  if (cookies.length === 0) throw new Error('Die accountgebundene Cookie-Session ist leer.');
+
+  const ws = await openPageSocket(port);
+  const cdp = createCdpClient(ws);
+  try {
+    await cdp.send('Network.setCookies', { cookies });
+  } finally {
+    try { ws.close(); } catch { /* fine */ }
+  }
+}
