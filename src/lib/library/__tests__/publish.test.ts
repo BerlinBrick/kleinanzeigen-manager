@@ -48,7 +48,7 @@ describe('library publish bridge', () => {
     fs.mkdirSync(path.join(secondWorkspace, '.temp'), { recursive: true });
     fs.writeFileSync(path.join(secondWorkspace, '.temp', 'login-session.json'), JSON.stringify({ cookies: 'second=valid' }));
     writeConfig(secondWorkspace, {
-      login: { username: 'second@example.com', password: 'secret' },
+      login: { username: '', password: '' },
       ad_defaults: { contact: { name: 'Zwei', zipcode: '10115', location: 'Berlin' } },
     });
     const ad = createLibraryAd(workspace, {
@@ -64,6 +64,7 @@ describe('library publish bridge', () => {
     expect(plan.ready).toBe(true);
     expect(plan.accountId).toBe(second.id);
     expect(plan.workspace).toBe(secondWorkspace);
+    expect(plan.workspace).not.toBe(workspace);
     expect(getLibraryAd(workspace, ad.id)?.account_id).toBe('default');
   });
 

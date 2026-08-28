@@ -117,6 +117,11 @@ export async function fetchKaAds(workspace: string): Promise<KaManageAd[]> {
   return fetchKaAdsWithCookies(cookies);
 }
 
+/** Count only listings that Kleinanzeigen currently reports as online. */
+export function countOnlineAds(ads: KaManageAd[]): number {
+  return ads.filter((ad) => ad.state?.toLowerCase() === 'active').length;
+}
+
 /** Validate/use an in-memory browser cookie export before it is persisted. */
 export async function fetchKaAdsWithCookies(cookies: string): Promise<KaManageAd[]> {
   const first = await fetchPage(cookies, 1);

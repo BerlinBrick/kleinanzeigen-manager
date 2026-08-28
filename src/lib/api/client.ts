@@ -171,6 +171,12 @@ export const api = {
 
   upload: <T>(url: string, formData: FormData) =>
     request<T>(url, { method: 'POST', body: formData }),
+
+  getForAccount: <T>(url: string, accountId: string, signal?: AbortSignal) =>
+    request<T>(url, { method: 'GET', signal, headers: { 'x-account-id': accountId } }),
+
+  postForAccount: <T>(url: string, accountId: string, body?: unknown) =>
+    request<T>(url, { method: 'POST', body, headers: { 'x-account-id': accountId } }),
 };
 
 export { ApiError };

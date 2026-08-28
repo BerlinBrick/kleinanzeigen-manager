@@ -99,11 +99,14 @@ export function useConversations(size = 25) {
   });
 }
 
-export function useConversation(conversationId: string | null) {
+export function useConversation(conversationId: string | null, accountId?: string) {
   const { activeAccountId } = useAccount();
+  const routedAccountId = accountId ?? activeAccountId;
   return useQuery<ConversationDetail & { aiSentTexts?: string[] }>({
-    queryKey: ['conversation', activeAccountId, conversationId],
-    queryFn: () => api.get(`/api/messages/${conversationId}`),
+    queryKey: ['conversation', routedAccountId, conversationId],
+    queryFn: () => accountId
+      ? api.getForAccount(`/api/messages/${conversationId}`, accountId)
+      : api.get(`/api/messages/${conversationId}`),
     enabled: !!conversationId,
     retry: false,
     refetchInterval: (query) => query.state.error ? false : 15000,
@@ -149,21 +152,24 @@ export function useResponderControl() {
   });
 }
 
-export function useSendMessage() {
+export function useSendMessage(accountId?: string) {
   const queryClient = useQueryClient();
   const { activeAccountId } = useAccount();
+  const routedAccountId = accountId ?? activeAccountId;
   return useMutation({
     mutationFn: ({ conversationId, message }: { conversationId: string; message: string }) =>
-      api.post(`/api/messages/${conversationId}`, { message }),
+      accountId
+        ? api.postForAccount(`/api/messages/${conversationId}`, accountId, { message })
+        : api.post(`/api/messages/${conversationId}`, { message }),
     onMutate: async ({ conversationId, message }) => {
       // Cancel outgoing refetches so they don't overwrite our optimistic update
-      await queryClient.cancelQueries({ queryKey: ['conversation', activeAccountId, conversationId] });
+      await queryClient.cancelQueries({ queryKey: ['conversation', routedAccountId, conversationId] });
 
-      const previous = queryClient.getQueryData<ConversationDetail>(['conversation', activeAccountId, conversationId]);
+      const previous = queryClient.getQueryData<ConversationDetail>(['conversation', routedAccountId, conversationId]);
 
       // Optimistically add the message
       if (previous) {
-        queryClient.setQueryData<ConversationDetail>(['conversation', activeAccountId, conversationId], {
+        queryClient.setQueryData<ConversationDetail>(['conversation', routedAccountId, conversationId], {
           ...previous,
           messages: [
             ...previous.messages,
@@ -184,12 +190,12 @@ export function useSendMessage() {
     onError: (_err, { conversationId }, context) => {
       // Rollback on error
       if (context?.previous) {
-        queryClient.setQueryData(['conversation', activeAccountId, conversationId], context.previous);
+        queryClient.setQueryData(['conversation', routedAccountId, conversationId], context.previous);
       }
     },
     onSettled: (_data, _err, { conversationId }) => {
       // Refetch to get the real server state
-      queryClient.invalidateQueries({ queryKey: ['conversation', activeAccountId, conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['conversation', routedAccountId, conversationId] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
   });

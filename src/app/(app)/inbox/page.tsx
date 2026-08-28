@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api/client';
 import { Badge, Button, Spinner, EmptyState, useToast } from '@/components/ui';
@@ -131,23 +131,13 @@ function ConversationDetail({
   conversation: InboxConversation;
   onClose: () => void;
 }) {
-  const { setActiveAccount } = useAccount();
   const { toast } = useToast();
   const [reply, setReply] = useState('');
-  const [ready, setReady] = useState(false);
 
-  // CRITICAL: route this conversation to its ORIGINATING account so any reply
-  // is sent through that account's session — never another account's. The api
-  // client reads the active account from localStorage, so switch BEFORE the
-  // conversation query is enabled.
-  useEffect(() => {
-    setActiveAccount(conversation.account_id);
-    setReady(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversation.account_id]);
-
-  const { data: detail, isLoading } = useConversation(ready ? conversation.id : null);
-  const sendMessage = useSendMessage();
+  // Pin detail reads and replies to the thread's origin account explicitly;
+  // never depend on asynchronous global account selection/localStorage.
+  const { data: detail, isLoading } = useConversation(conversation.id, conversation.account_id);
+  const sendMessage = useSendMessage(conversation.account_id);
 
   const handleSend = async () => {
     if (!reply.trim()) return;

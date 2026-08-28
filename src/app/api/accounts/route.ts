@@ -8,7 +8,7 @@ import {
   createAccount,
   hasSession,
 } from '@/lib/accounts/accounts';
-import { findAdFiles } from '@/lib/yaml/ads';
+import { countOnlineAds, fetchKaAds } from '@/lib/ka/management-api';
 
 /** Best-effort unread count — never launches a browser and never throws. */
 async function accountUnread(workspace: string): Promise<number | null> {
@@ -25,12 +25,9 @@ async function accountUnread(workspace: string): Promise<number | null> {
   }
 }
 
-function activeAdCount(workspace: string): number {
-  try {
-    return findAdFiles(workspace).length;
-  } catch {
-    return 0;
-  }
+async function activeAdCount(workspace: string): Promise<number> {
+  if (!hasSession(workspace)) return 0;
+  return countOnlineAds(await fetchKaAds(workspace));
 }
 
 export async function GET(request: NextRequest) {
@@ -50,7 +47,7 @@ export async function GET(request: NextRequest) {
         let unread: number | null = null;
         try {
           login_status = computeLoginStatus(ws);
-          ad_count = activeAdCount(ws);
+          ad_count = await activeAdCount(ws);
           unread = await accountUnread(ws);
         } catch {
           login_status = 'disconnected';

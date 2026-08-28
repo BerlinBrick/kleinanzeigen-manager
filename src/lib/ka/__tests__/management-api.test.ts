@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchKaAdsWithCookies, hasRequiredAuthCookies } from '../management-api';
+import { countOnlineAds, fetchKaAdsWithCookies, hasRequiredAuthCookies } from '../management-api';
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('management API browser-session validation', () => {
+  it('counts only ads currently reported online', () => {
+    const base = { id: 1, title: 'Test', price: '1 €', category: '', viewCount: 0, watchCount: 0, replies: 0, imageCount: 1 };
+    expect(countOnlineAds([
+      { ...base, state: 'active' },
+      { ...base, id: 2, state: 'ACTIVE' },
+      { ...base, id: 3, state: 'paused' },
+    ])).toBe(2);
+  });
+
   it('requires both Kleinanzeigen auth cookies', () => {
     expect(hasRequiredAuthCookies('access_token=a; refresh_token=b; other=c')).toBe(true);
     expect(hasRequiredAuthCookies('access_token=a; other=c')).toBe(false);

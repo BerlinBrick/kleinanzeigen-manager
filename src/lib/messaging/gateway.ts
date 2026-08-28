@@ -184,6 +184,7 @@ export async function ensureSession(
   workspace: string,
   opts: { cookieOnly?: boolean } = {},
 ): Promise<BrowserSession> {
+  const hasAccountSession = fs.existsSync(path.join(workspace, COOKIE_FILE));
   const existing = g.__msgSessions!.get(workspace);
   if (existing && existing.status === 'ready') {
     // Refresh cookies every 30 minutes (sessions are long-lived)
@@ -403,6 +404,11 @@ export async function ensureSession(
 
     // Need to log in — use the bot's login credentials
     session.status = 'logging_in';
+    if (hasAccountSession) {
+      session.status = 'error';
+      session.error = 'Die accountgebundene Kleinanzeigen-Session ist ungültig. Bitte dieses Konto erneut verbinden.';
+      throw new Error(session.error);
+    }
     const mergedConfig = readMergedConfig(workspace);
     const loginSection = mergedConfig.login as { username?: string; password?: string } | undefined;
     const creds = (loginSection?.username && loginSection?.password)
@@ -737,7 +743,10 @@ export function initMessaging(): void {
 // --- Gateway API methods ---
 
 async function getSession(workspace: string): Promise<BrowserSession> {
-  const session = await ensureSession(workspace);
+  // API reads are deliberately session-only. They may restore the persisted
+  // account cookies (or a warm VNC session), but must never start a credential
+  // login from config.yaml as a side effect of opening an inbox.
+  const session = await ensureSession(workspace, { cookieOnly: true });
   // Browserless mode still has cached cookies for API calls
   if ((session.status === 'ready' || session.status === 'browserless') && session.userId) {
     return session;

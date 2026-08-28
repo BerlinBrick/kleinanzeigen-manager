@@ -9,6 +9,7 @@ import {
 } from '@/lib/accounts/accounts';
 import { findAdFiles, readAd } from '@/lib/yaml/ads';
 import path from 'path';
+import { countOnlineAds, fetchKaAds } from '@/lib/ka/management-api';
 
 interface RecentAd {
   account_id: string;
@@ -54,13 +55,16 @@ export async function GET(request: NextRequest) {
         let unread: number | null = null;
         try {
           login_status = computeLoginStatus(ws);
+          // Account cards/totals reflect Kleinanzeigen itself. Local YAML files
+          // remain useful only for automation/recent-ad metadata below.
+          const onlineAds = hasSession(ws) ? await fetchKaAds(ws) : [];
+          ad_count = countOnlineAds(onlineAds);
+          active_ads = ad_count;
           const files = findAdFiles(ws);
-          ad_count = files.length;
           for (const fp of files) {
             let ad: Record<string, unknown> = {};
             try { ad = readAd(fp); } catch { continue; }
             const active = ad.active !== false;
-            if (active) active_ads += 1;
             if (ad.republication_interval != null) automations += 1;
             recent.push({
               account_id: account.id,
