@@ -47,10 +47,18 @@ export async function GET(request: NextRequest) {
         let unread: number | null = null;
         try {
           login_status = computeLoginStatus(ws);
-          ad_count = await activeAdCount(ws);
-          unread = await accountUnread(ws);
         } catch {
           login_status = 'disconnected';
+        }
+        try {
+          ad_count = await activeAdCount(ws);
+        } catch {
+          // Ad-count availability is independent from account/session status.
+        }
+        try {
+          unread = await accountUnread(ws);
+        } catch {
+          // Unread availability is independent from account/session status.
         }
         return {
           id: account.id,

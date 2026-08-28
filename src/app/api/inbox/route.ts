@@ -2,12 +2,8 @@ import { handleApiError } from '@/lib/api/error-handler';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/middleware';
 import { loadAccounts, accountWorkspace, hasSession } from '@/lib/accounts/accounts';
-import type { Conversation } from '@/types/message';
-
-interface InboxConversation extends Conversation {
-  account_id: string;
-  account_name: string;
-}
+import type { AccountConversation } from '@/types/message';
+import { listAllConversations } from '@/lib/messaging/unified-inbox';
 
 /**
  * Unified inbox across ALL connected Kleinanzeigen accounts.
@@ -27,7 +23,8 @@ export async function GET(request: NextRequest) {
 
     const params = new URL(request.url).searchParams;
     const filterAccount = params.get('account'); // optional: scope to one account
-    const size = Math.min(parseInt(params.get('size') ?? '50', 10) || 50, 100);
+    const size = Math.min(parseInt(params.get('size') ?? '100', 10) || 100, 100);
+    const complete = params.get('complete') !== 'false';
 
     const accounts = loadAccounts(user.userWorkspace).filter(
       (a) => !filterAccount || a.id === filterAccount,
@@ -35,7 +32,7 @@ export async function GET(request: NextRequest) {
 
     const { listConversations } = await import('@/lib/messaging/gateway');
 
-    const all: InboxConversation[] = [];
+    const all: AccountConversation[] = [];
     const errors: Array<{ account_id: string; account_name: string; error: string }> = [];
     let totalUnread = 0;
 
@@ -47,12 +44,13 @@ export async function GET(request: NextRequest) {
         if (!hasSession(ws)) return;
         try {
           const data = await Promise.race([
-            listConversations(ws, 0, size),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
+            complete
+              ? listAllConversations(ws, size, listConversations)
+              : listConversations(ws, 0, size).then((page) => ({ conversations: page.conversations ?? [], unread: page.numUnreadMessages ?? 0 })),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 15_000)),
           ]);
-          const resp = data as { conversations?: Conversation[]; numUnreadMessages?: number };
-          totalUnread += resp.numUnreadMessages ?? 0;
-          for (const c of resp.conversations ?? []) {
+          totalUnread += data.unread;
+          for (const c of data.conversations) {
             all.push({ ...c, account_id: account.id, account_name: account.display_name });
           }
         } catch (e) {

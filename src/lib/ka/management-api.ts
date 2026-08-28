@@ -111,10 +111,27 @@ async function fetchPage(cookies: string, page: number): Promise<KaManageRespons
 }
 
 export async function fetchKaAds(workspace: string): Promise<KaManageAd[]> {
-  const cookies = loadSessionCookies(workspace);
+  let cookies = loadSessionCookies(workspace);
   if (!cookies) return [];
 
-  return fetchKaAdsWithCookies(cookies);
+  try {
+    return await fetchKaAdsWithCookies(cookies);
+  } catch (error) {
+    if (!(error instanceof KaManageApiError) || (error.status !== 401 && error.status !== 403)) throw error;
+
+    // Recover only through this account's isolated workspace/profile. The
+    // messaging session lifecycle already implements refresh-token recovery
+    // without deleting persisted cookies or falling back to another account.
+    const { ensureSession, stopSession } = await import('@/lib/messaging/gateway');
+    stopSession(workspace);
+    await ensureSession(workspace);
+    cookies = loadSessionCookies(workspace);
+    if (!cookies) throw error;
+
+    // A single retry prevents loops when Kleinanzeigen rejects the refreshed
+    // session as well. All persisted recovery material remains untouched.
+    return fetchKaAdsWithCookies(cookies);
+  }
 }
 
 /** Count only listings that Kleinanzeigen currently reports as online. */

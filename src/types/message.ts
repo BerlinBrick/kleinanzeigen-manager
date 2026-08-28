@@ -28,6 +28,18 @@ export interface Conversation {
   flaggingEnabled: boolean;
 }
 
+export interface AccountConversation extends Conversation {
+  account_id: string;
+  account_name: string;
+}
+
+export interface UnifiedInboxResponse {
+  conversations: AccountConversation[];
+  numUnreadMessages: number;
+  total: number;
+  errors: Array<{ account_id: string; account_name: string; error: string }>;
+}
+
 export interface Message {
   messageId: string;
   textShort: string;
