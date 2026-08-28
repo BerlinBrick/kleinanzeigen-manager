@@ -63,14 +63,6 @@ function readyCookieSession(workspace: string, cookies: string, userId: number, 
 }
 
 /**
- * Delete stale cookies from disk so ensureSession doesn't re-use them.
- */
-function deleteCookiesFromDisk(workspace: string): void {
-  const filePath = path.join(workspace, COOKIE_FILE);
-  try { fs.unlinkSync(filePath); } catch { /* file already gone */ }
-}
-
-/**
  * Load cookies from disk. Returns null if file missing or unreadable.
  */
 function loadCookiesFromDisk(workspace: string): PersistedCookies | null {
@@ -268,8 +260,17 @@ export async function ensureSession(
     // the messaging placeholder port (not the VNC port): the 30-min refresh re-resolves the
     // live VNC port per workspace, so the session must NOT pin a port that can be recycled.
     try {
-      const cookies = await extractCookiesFromCDP(vncCdpPort);
-      const userId = await fetchUserId(cookies);
+      let cookies = await extractCookiesFromCDP(vncCdpPort);
+      let userId = await fetchUserId(cookies);
+      if (!userId && cookies.includes('refresh_token=')) {
+        const refreshWs = await openPageSocket(vncCdpPort);
+        const refreshCdp = createCdpClient(refreshWs);
+        await refreshCdp.send('Page.navigate', { url: 'https://www.kleinanzeigen.de/m-meine-anzeigen.html' });
+        await sleep(5000);
+        refreshWs.close();
+        cookies = await extractCookiesFromCDP(vncCdpPort);
+        userId = await fetchUserId(cookies);
+      }
       if (userId && !isAccessTokenExpired(cookies)) {
         const cookieSession = readyCookieSession(workspace, cookies, userId, Date.now());
         saveCookiesToDisk(workspace, cookies, userId);
@@ -369,8 +370,24 @@ export async function ensureSession(
 
     // Network.getAllCookies works on about:blank — no navigation needed
     await sleep(500);
-    const cookies = await extractCookiesFromCDP(session.cdpPort);
-    const userId = await fetchUserId(cookies);
+    let cookies = await extractCookiesFromCDP(session.cdpPort);
+    let userId = await fetchUserId(cookies);
+
+    // A persisted profile can have an expired session access_token while its
+    // refresh_token is still valid. Visiting the authenticated ads page lets
+    // Kleinanzeigen refresh that token inside this exact account profile,
+    // without falling back to config credentials or another workspace.
+    if (!userId && cookies.includes('refresh_token=')) {
+      try {
+        const refreshWs = await openPageSocket(session.cdpPort);
+        const refreshCdp = createCdpClient(refreshWs);
+        await refreshCdp.send('Page.navigate', { url: 'https://www.kleinanzeigen.de/m-meine-anzeigen.html' });
+        await sleep(5000);
+        refreshWs.close();
+        cookies = await extractCookiesFromCDP(session.cdpPort);
+        userId = await fetchUserId(cookies);
+      } catch { /* continue to the normal invalid-session handling below */ }
+    }
 
     if (userId) {
       if (!isAccessTokenExpired(cookies)) {
@@ -758,6 +775,31 @@ async function getSession(workspace: string): Promise<BrowserSession> {
 }
 
 async function gatewayFetch(url: string, workspace: string, options?: RequestInit): Promise<Response> {
+  return gatewayFetchWithRefresh(url, workspace, options, true);
+}
+
+/** Mark only the in-memory session invalid; persisted cookies/profile are recovery data. */
+export function invalidateSessionAfterAuthFailure(workspace: string, error: string): void {
+  const session = g.__msgSessions!.get(workspace);
+  if (!session) return;
+  if (session.proc) {
+    try { session.proc.kill('SIGTERM'); } catch { /* already gone */ }
+    session.proc = null;
+  }
+  if (session.cdpWs) {
+    try { session.cdpWs.close(); } catch { /* already closed */ }
+    session.cdpWs = undefined;
+  }
+  session.status = 'error';
+  session.error = error;
+}
+
+async function gatewayFetchWithRefresh(
+  url: string,
+  workspace: string,
+  options: RequestInit | undefined,
+  allowRefresh: boolean,
+): Promise<Response> {
   const session = await getSession(workspace);
 
   // Extract access_token from cookies for Bearer auth
@@ -786,9 +828,22 @@ async function gatewayFetch(url: string, workspace: string, options?: RequestIni
   });
 
   if (response.status === 401 || response.status === 403) {
-    stopSession(workspace);
-    deleteCookiesFromDisk(workspace);
-    throw new Error('Kleinanzeigen-Session abgelaufen. Seite neu laden zum Re-Login.');
+    const error = 'Kleinanzeigen-Session abgelaufen. Bitte das Konto erneut verbinden.';
+    if (allowRefresh) {
+      // Drop only the in-memory/browser process, never the persisted recovery
+      // material. ensureSession then opens this workspace's own profile and
+      // attempts refresh-token recovery before any credential login.
+      stopSession(workspace);
+      try {
+        await ensureSession(workspace);
+        return gatewayFetchWithRefresh(url, workspace, options, false);
+      } catch {
+        invalidateSessionAfterAuthFailure(workspace, error);
+        throw new Error(error);
+      }
+    }
+    invalidateSessionAfterAuthFailure(workspace, error);
+    throw new Error(error);
   }
 
   if (!response.ok) {
