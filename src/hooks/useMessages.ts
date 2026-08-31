@@ -2,7 +2,7 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api/client';
-import type { ConversationsResponse, ConversationDetail } from '@/types/message';
+import type { ConversationsResponse, ConversationDetail, UnifiedInboxResponse } from '@/types/message';
 import { useAccount } from '@/contexts/AccountContext';
 
 interface MessagingStatus {
@@ -99,6 +99,15 @@ export function useConversations(size = 25) {
   });
 }
 
+export function useUnifiedInbox(complete = true) {
+  return useQuery<UnifiedInboxResponse>({
+    queryKey: ['unified-inbox', complete ? 'complete' : 'summary'],
+    queryFn: () => api.get(complete ? '/api/inbox?size=100' : '/api/inbox?size=1&complete=false'),
+    retry: false,
+    refetchInterval: (query) => query.state.error ? false : 30_000,
+  });
+}
+
 export function useConversation(conversationId: string | null, accountId?: string) {
   const { activeAccountId } = useAccount();
   const routedAccountId = accountId ?? activeAccountId;
@@ -131,23 +140,29 @@ interface ResponderStatus {
   aiAdGen: { adGenerations: number; adImageAnalyses: number };
 }
 
-export function useResponderStatus() {
+export function useResponderStatus(accountId?: string) {
   const { activeAccountId } = useAccount();
+  const routedAccountId = accountId ?? activeAccountId;
   return useQuery<ResponderStatus>({
-    queryKey: ['responder-status', activeAccountId],
-    queryFn: () => api.get('/api/messages/responder'),
+    queryKey: ['responder-status', routedAccountId],
+    queryFn: () => accountId
+      ? api.getForAccount('/api/messages/responder', accountId)
+      : api.get('/api/messages/responder'),
     refetchInterval: 10000,
   });
 }
 
-export function useResponderControl() {
+export function useResponderControl(accountId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      api.post('/api/messages/responder', body),
+      accountId
+        ? api.postForAccount('/api/messages/responder', accountId, body)
+        : api.post('/api/messages/responder', body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['responder-status'] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({ queryKey: ['unified-inbox'] });
     },
   });
 }
@@ -197,6 +212,7 @@ export function useSendMessage(accountId?: string) {
       // Refetch to get the real server state
       queryClient.invalidateQueries({ queryKey: ['conversation', routedAccountId, conversationId] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({ queryKey: ['unified-inbox'] });
     },
   });
 }

@@ -1,13 +1,15 @@
 'use client';
 
-import type { Conversation } from '@/types/message';
+import type { CSSProperties } from 'react';
+import type { AccountConversation } from '@/types/message';
+import { accountAccent } from '@/lib/messaging/account-accent';
 import styles from './Messages.module.scss';
 
 interface ConversationListProps {
-  conversations: Conversation[];
-  selectedId: string | null;
+  conversations: AccountConversation[];
+  selectedKey: string | null;
   pendingConversationIds?: Set<string>;
-  onSelect: (id: string) => void;
+  onSelect: (conversation: AccountConversation) => void;
 }
 
 function formatDate(dateStr: string): string {
@@ -30,19 +32,20 @@ function adImageUrl(url: string | null | undefined): string {
   return `/api/messages/image?url=${encodeURIComponent(directUrl)}`;
 }
 
-export function ConversationList({ conversations, selectedId, pendingConversationIds, onSelect }: ConversationListProps) {
+export function ConversationList({ conversations, selectedKey, pendingConversationIds, onSelect }: ConversationListProps) {
   return (
     <div className={styles.list}>
       {conversations.map((conv) => {
         const contactName = conv.role === 'Seller' ? conv.buyerName : conv.sellerName;
-        const isSelected = conv.id === selectedId;
+        const key = `${conv.account_id}:${conv.id}`;
+        const isSelected = key === selectedKey;
         const isDeleted = conv.adStatus === 'DELETED';
 
         return (
           <button
-            key={conv.id}
+            key={key}
             className={`${styles.convItem} ${isSelected ? styles.convItemSelected : ''} ${conv.unread ? styles.convItemUnread : ''}`}
-            onClick={() => onSelect(conv.id)}
+            onClick={() => onSelect(conv)}
           >
             <div className={styles.convImage}>
               {conv.adImage && (
@@ -75,6 +78,12 @@ export function ConversationList({ conversations, selectedId, pendingConversatio
                 {conv.boundness === 'OUTBOUND' && <span className={styles.convYou}>Du: </span>}
                 {conv.textShortTrimmed}
               </div>
+              <span
+                className={styles.convAccount}
+                style={{ '--account-accent': accountAccent(conv.account_id) } as CSSProperties}
+              >
+                {conv.account_name}
+              </span>
             </div>
             {pendingConversationIds?.has(conv.id) && (
               <span className={styles.convPending} title="KI-Vorschlag wartet auf Bestätigung">KI</span>

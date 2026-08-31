@@ -1,0 +1,42 @@
+services:
+  kleinanzeigen-bot-ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ghcr.io/bkd3sign/kleinanzeigen-bot-ui:latest
+    container_name: kleinanzeigen-bot-ui-local
+    restart: unless-stopped
+    ports:
+      # Port 3000 inside the container is nginx, which fronts the Next.js app
+      # (on internal port 3001) and serves noVNC same-origin under /bot-browser/.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - "${LOCAL_WORKSPACE}:/workspace"
+    environment:
+      - BOT_CMD=/workspace/bot/kleinanzeigen-bot
+      - BOT_DIR=/workspace
+      - TZ=${TZ:-Europe/Berlin}
+      # Set to "true" only if running behind an HTTPS reverse proxy:
+      # - COOKIE_SECURE=true
+    shm_size: "512m"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    cap_add:
+      - SYS_ADMIN
+    tmpfs:
+      - /tmp:size=1G,exec
+    security_opt:
+      - seccomp:unconfined
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/system/ping"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -34,6 +34,48 @@
   color: var(--text-primary);
 }
 
+.listCount {
+  margin-left: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.accountFilter {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+
+  label {
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+  }
+
+  select {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: var(--space-1-5) var(--space-2);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--font-size-xs);
+  }
+}
+
+.inboxErrors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--red) 35%, var(--border-color));
+  background: color-mix(in srgb, var(--red) 8%, var(--bg-primary));
+  color: var(--red);
+  font-size: var(--font-size-xs);
+}
+
 .unreadBadge {
   background: var(--accent);
   color: white;
@@ -175,6 +217,21 @@
   color: var(--text-muted);
 }
 
+.convAccount {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: var(--space-px) var(--space-1-5);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--account-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--account-accent) 16%, transparent);
+  color: var(--account-accent);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .convPending {
   background: var(--yellow);
   color: var(--on-bright);
@@ -278,6 +335,17 @@
   font-weight: var(--font-semibold);
   color: var(--text-primary);
   margin: 0;
+}
+
+.chatHeaderAccount {
+  align-self: flex-start;
+  padding: var(--space-px) var(--space-1-5);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--account-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--account-accent) 16%, transparent);
+  color: var(--account-accent);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-semibold);
 }
 
 .chatHeaderAd {

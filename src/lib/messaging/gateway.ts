@@ -30,8 +30,8 @@ const SESSION_START_TIMEOUT_MS = 180_000;
 
 interface PersistedCookies {
   cookies: string;
-  userId: number;
-  savedAt: number;
+  userId?: number;
+  savedAt?: number;
 }
 
 /**
@@ -69,7 +69,11 @@ function loadCookiesFromDisk(workspace: string): PersistedCookies | null {
   const filePath = path.join(workspace, COOKIE_FILE);
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as PersistedCookies;
-    if (data.cookies && data.userId) return data;
+    // The Management API deliberately persists usable account cookies even
+    // when no user id has been discovered yet. Messaging can derive that id
+    // from the same cookies via fetchUserId(), so do not reject that session
+    // shape before account-bound validation/refresh gets a chance to run.
+    if (typeof data.cookies === 'string' && data.cookies) return data;
   } catch { /* file missing or corrupt */ }
   return null;
 }
@@ -237,7 +241,12 @@ export async function ensureSession(
     if (persisted) {
       const userId = await fetchUserId(persisted.cookies);
       if (userId && !isAccessTokenExpired(persisted.cookies)) {
-        const cookieSession = readyCookieSession(workspace, persisted.cookies, userId, persisted.savedAt);
+        const cookieSession = readyCookieSession(
+          workspace,
+          persisted.cookies,
+          userId,
+          typeof persisted.savedAt === 'number' ? persisted.savedAt : Date.now(),
+        );
         g.__msgSessions!.set(workspace, cookieSession);
         return cookieSession;
       }
@@ -763,7 +772,20 @@ async function getSession(workspace: string): Promise<BrowserSession> {
   // API reads are deliberately session-only. They may restore the persisted
   // account cookies (or a warm VNC session), but must never start a credential
   // login from config.yaml as a side effect of opening an inbox.
-  const session = await ensureSession(workspace, { cookieOnly: true });
+  let session: BrowserSession;
+  try {
+    session = await ensureSession(workspace, { cookieOnly: true });
+  } catch (error) {
+    if (!fs.existsSync(path.join(workspace, COOKIE_FILE))) throw error;
+
+    // Match the Management API's account-bound recovery: when persisted
+    // cookies exist but cannot be used directly (missing user id / expired
+    // access token), retry once through this account's isolated browser
+    // profile so its refresh token can renew the session. hasAccountSession in
+    // ensureSession prevents this path from falling through to credential login.
+    stopSession(workspace);
+    session = await ensureSession(workspace);
+  }
   // Browserless mode still has cached cookies for API calls
   if ((session.status === 'ready' || session.status === 'browserless') && session.userId) {
     return session;

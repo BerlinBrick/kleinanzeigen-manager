@@ -31,7 +31,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     curl \
     fonts-liberation \
-    fonts-noto-color-emoji \
     gosu \
     matchbox-window-manager \
     nginx-light \
@@ -91,11 +90,12 @@ EXPOSE 3000
 
 # files are copied at the build-context root (NAS export is flat; CI/compose stage them
 # via the "Prepare Docker context" cp step)
-COPY entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # nginx config: same-origin proxy (port 3000 → app on 3001 + noVNC on /bot-browser/)
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY docker/nginx.conf /etc/nginx/nginx.conf
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:3000/api/system/ping || exit 1

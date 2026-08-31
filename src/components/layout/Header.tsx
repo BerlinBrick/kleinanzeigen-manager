@@ -8,15 +8,14 @@ import { ProfileMenu } from './ProfileMenu';
 import { AccountSwitcher } from './AccountSwitcher';
 import { CreateAdModal } from '@/components/ads/CreateAdModal';
 import { Badge } from '@/components/ui/Badge/Badge';
-import { useUnreadCount, useResponderStatus } from '@/hooks/useMessages';
+import { useResponderStatus, useUnifiedInbox } from '@/hooks/useMessages';
 import { useAiAvailable } from '@/hooks/useAiAvailable';
-import { getResponderBadge, canLoadInbox } from '@/lib/messaging/responderBadge';
+import { getResponderBadge } from '@/lib/messaging/responderBadge';
 import styles from './Header.module.scss';
 
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/accounts': 'Konten',
-  '/inbox': 'Postfach',
   '/ads': 'Anzeigen',
   '/ads/new': 'Neue Anzeige',
   '/ads/edit': 'Anzeige bearbeiten',
@@ -191,21 +190,6 @@ export function Header() {
         {/* Messages link with unread badge */}
         <MessagesLink onClose={() => setMobileOpen(false)} />
 
-        {/* Central inbox (all accounts) */}
-        <Link
-          href="/inbox"
-          className={styles.headerDropdownBtn}
-          onClick={() => setMobileOpen(false)}
-        >
-          <span className={styles.headerDropdownBtnIcon}>
-            <svg viewBox="0 0 24 24">
-              <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-              <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-            </svg>
-          </span>
-          <span className={styles.navLabel}>Postfach</span>
-        </Link>
-
         {/* Accounts management */}
         <Link
           href="/accounts"
@@ -253,11 +237,11 @@ export function Header() {
 }
 
 function MessagesLink({ onClose }: { onClose: () => void }) {
-  const { data } = useUnreadCount();
+  const { data } = useUnifiedInbox(false);
   const { data: responder } = useResponderStatus();
   const { isAiAvailable } = useAiAvailable();
   const count = data?.numUnreadMessages ?? 0;
-  const badge = getResponderBadge(responder?.mode, isAiAvailable, canLoadInbox(data?.status, data?.userId != null));
+  const badge = getResponderBadge(responder?.mode, isAiAvailable);
 
   return (
     <Link

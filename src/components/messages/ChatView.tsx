@@ -1,14 +1,17 @@
 'use client';
 
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useConversation, useSendMessage, useResponderStatus, useResponderControl } from '@/hooks/useMessages';
 import { Spinner, Button } from '@/components/ui';
 import type { Message } from '@/types/message';
+import { accountAccent } from '@/lib/messaging/account-accent';
 import styles from './Messages.module.scss';
 
 interface ChatViewProps {
   conversationId: string;
+  accountId: string;
+  accountName: string;
   onBack?: () => void;
 }
 
@@ -32,9 +35,9 @@ function adImageUrl(url: string | null | undefined): string {
   return `/api/messages/image?url=${encodeURIComponent(directUrl)}`;
 }
 
-function PendingReplyBanner({ conversationId }: { conversationId: string }) {
-  const { data: responder } = useResponderStatus();
-  const control = useResponderControl();
+function PendingReplyBanner({ conversationId, accountId }: { conversationId: string; accountId: string }) {
+  const { data: responder } = useResponderStatus(accountId);
+  const control = useResponderControl(accountId);
   const [editedReply, setEditedReply] = useState<string | null>(null);
 
   const pending = responder?.pendingReplies?.find(
@@ -115,10 +118,10 @@ function MessageBubble({ message, isAiSent }: { message: Message; isAiSent?: boo
   );
 }
 
-export function ChatView({ conversationId, onBack }: ChatViewProps) {
+export function ChatView({ conversationId, accountId, accountName, onBack }: ChatViewProps) {
   const queryClient = useQueryClient();
-  const { data: conv, isLoading, error } = useConversation(conversationId);
-  const sendMessage = useSendMessage();
+  const { data: conv, isLoading, error } = useConversation(conversationId, accountId);
+  const sendMessage = useSendMessage(accountId);
   const [draft, setDraft] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -206,6 +209,12 @@ export function ChatView({ conversationId, onBack }: ChatViewProps) {
         </div>
         <div className={styles.chatHeaderInfo}>
           <h3 className={styles.chatHeaderName}>{contactName}</h3>
+          <span
+            className={styles.chatHeaderAccount}
+            style={{ '--account-accent': accountAccent(accountId) } as CSSProperties}
+          >
+            Konto: {accountName}
+          </span>
           <span className={styles.chatHeaderAd}>
             {conv.adStatus === 'DELETED' && <span className={styles.convDeletedLabel}>Gelöscht · </span>}
             {conv.adTitle}
@@ -234,7 +243,7 @@ export function ChatView({ conversationId, onBack }: ChatViewProps) {
       </div>
 
       {/* AI Pending Reply */}
-      <PendingReplyBanner conversationId={conversationId} />
+      <PendingReplyBanner conversationId={conversationId} accountId={accountId} />
 
       {/* Input */}
       {conv.adStatus !== 'DELETED' && (
